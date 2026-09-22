@@ -181,22 +181,28 @@ check_utf8_and_bom() {
 	}
 
 	if command -v python3 >/dev/null 2>&1; then
-		input_files | LC_ALL=C sort | python3 -c '
-			import codecs
-			import os
-			import sys
+		# Keep the Python source free of leading indentation. Shell heredocs
+		# pass the script to python3 -c verbatim, and Python rejects an
+		# indented first statement with IndentationError.
+		input_files | LC_ALL=C sort | python3 -c "$(cat <<'PY'
+import codecs
+import os
+import sys
 
-			for raw_path in sys.stdin.buffer:
-				path = os.fsdecode(raw_path.rstrip(b"\n"))
-				with open(path, "rb") as handle:
-					data = handle.read()
-				if data.startswith(codecs.BOM_UTF8):
-					raise SystemExit("UTF-8 BOM found: " + path)
-				try:
-					data.decode("utf-8")
-				except UnicodeDecodeError as error:
-					raise SystemExit("Invalid UTF-8 in {}: {}".format(path, error))
-		'
+for raw_path in sys.stdin.buffer:
+    path = os.fsdecode(raw_path.rstrip(b"\r\n"))
+    if not path:
+        continue
+    with open(path, "rb") as handle:
+        data = handle.read()
+    if data.startswith(codecs.BOM_UTF8):
+        raise SystemExit("UTF-8 BOM found: " + path)
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise SystemExit("Invalid UTF-8 in {}: {}".format(path, error))
+PY
+)"
 	elif command -v perl >/dev/null 2>&1; then
 		input_files | LC_ALL=C sort | perl -MEncode=decode -e '
 			while (defined(my $path = <STDIN>)) {
