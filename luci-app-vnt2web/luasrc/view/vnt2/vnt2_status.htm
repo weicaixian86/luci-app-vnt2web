@@ -1,0 +1,229 @@
+<%
+local dsp = require "luci.dispatcher"
+local status_url = dsp.build_url("admin", "vpn", "vnt2", "status")
+local check_latest_url = dsp.build_url("admin", "vpn", "vnt2", "check_latest")
+local open_web_url = dsp.build_url("admin", "vpn", "vnt2", "open_web")
+local web_log_url = dsp.build_url("admin", "vpn", "vnt2", "web_log")
+local download_log_url = dsp.build_url("admin", "vpn", "vnt2", "download_log")
+%>
+
+<style type="text/css">
+	.vnt2-status-wrap {
+		margin: 10px 0 24px;
+	}
+	.vnt2-status-grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+		gap: 14px;
+	}
+	.vnt2-card {
+		border: 1px solid var(--border-color-medium, var(--border-color-high, #d9d9d9));
+		border-radius: 8px;
+		padding: 14px 16px;
+		background: var(--card-background, var(--panel-bg, var(--background-color, #fff)));
+		color: var(--text-color, inherit);
+		box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+	}
+	.vnt2-card h3 {
+		margin: 0 0 10px;
+		font-size: 16px;
+		line-height: 1.4;
+		color: var(--text-color-high, var(--text-color, inherit));
+	}
+	.vnt2-badge {
+		display: inline-block;
+		min-width: 68px;
+		padding: 2px 10px;
+		border-radius: 999px;
+		font-size: 12px;
+		line-height: 22px;
+		color: #fff;
+		text-align: center;
+		margin-left: 8px;
+		vertical-align: middle;
+	}
+	.vnt2-on {
+		background: #19a15f;
+	}
+	.vnt2-off {
+		background: #d9534f;
+	}
+	.vnt2-warn {
+		background: #f0ad4e;
+	}
+	.vnt2-card table {
+		width: 100%;
+		border-collapse: collapse;
+		font-size: 12px;
+		background: transparent;
+		color: inherit;
+	}
+	.vnt2-card table tr,
+	.vnt2-card table tbody,
+	.vnt2-card table thead {
+		background: transparent !important;
+		color: inherit;
+	}
+	.vnt2-card td,
+	.vnt2-card th {
+		padding: 5px 0;
+		border-bottom: 1px dashed var(--border-color-low, var(--border-color-medium, #ececec));
+		vertical-align: top;
+		word-break: break-all;
+		background: transparent !important;
+		box-shadow: none !important;
+	}
+	.vnt2-card td:first-child {
+		width: 104px;
+		color: var(--text-color-low, var(--text-color, #666));
+		padding-right: 8px;
+	}
+	.vnt2-card td:last-child {
+		color: var(--text-color-high, var(--text-color, #222));
+	}
+	.vnt2-links {
+		margin-top: 9px;
+		font-size: 12px;
+	}
+	.vnt2-links a {
+		margin-right: 12px;
+		color: var(--primary, var(--link-color, inherit));
+	}
+</style>
+
+<div class="vnt2-status-wrap">
+	<div class="vnt2-status-grid">
+		<div class="vnt2-card">
+			<h3>
+				vnt2_web 客户端
+				<span id="web_status_badge" class="vnt2-badge vnt2-off">未运行</span>
+			</h3>
+			<table>
+				<tr><td>本地版本</td><td id="web_tag">-</td></tr>
+				<tr><td>最新版本</td><td id="web_latest_tag">-</td></tr>
+				<tr><td>运行时长</td><td id="web_runtime">-</td></tr>
+				<tr><td>进程/PID</td><td id="web_pid">-</td></tr>
+				<tr><td>CPU / 内存</td><td id="web_usage">-</td></tr>
+				<tr><td>监听地址</td><td id="web_addr">-</td></tr>
+				<tr><td>日志级别</td><td id="web_log_level">-</td></tr>
+				<tr><td>WAN 放行</td><td id="web_wan">-</td></tr>
+				<tr><td>访问地址</td><td id="web_url">-</td></tr>
+				<tr><td>下载状态</td><td id="web_download">-</td></tr>
+			</table>
+			<div class="vnt2-links">
+				<a href="<%=open_web_url%>" target="_blank" rel="noopener noreferrer">打开 Web 页面</a>
+				<a href="<%=web_log_url%>">查看 Web 日志</a>
+				<a href="<%=download_log_url%>">查看下载日志</a>
+			</div>
+		</div>
+	</div>
+
+</div>
+
+<script type="text/javascript">
+//<![CDATA[
+(function() {
+	var statusUrl = "<%=status_url%>";
+	var checkLatestUrl = "<%=check_latest_url%>";
+
+	function byId(id) {
+		return document.getElementById(id);
+	}
+
+	function escapeHtml(v) {
+		return String(v)
+			.replace(/&/g, "&amp;")
+			.replace(/</g, "&lt;")
+			.replace(/>/g, "&gt;")
+			.replace(/"/g, "&quot;")
+			.replace(/'/g, "&#39;");
+	}
+
+	function text(v, empty) {
+		if (v === null || v === undefined || v === "") {
+			return escapeHtml(empty || "-");
+		}
+		return escapeHtml(v);
+	}
+
+	function yesNo(v) {
+		return String(v) === "1" ? "已启用" : "未启用";
+	}
+
+	function joinList(v) {
+		if (!v || !v.length) {
+			return "-";
+		}
+		var items = [];
+		for (var i = 0; i < v.length; i++) {
+			items.push(text(v[i]));
+		}
+		return items.join(" / ");
+	}
+
+	function setBadge(id, running) {
+		var node = byId(id);
+		if (!node) return;
+		node.className = "vnt2-badge " + (running ? "vnt2-on" : "vnt2-off");
+		node.innerHTML = running ? "运行中" : "未运行";
+	}
+
+	function setHtml(id, value) {
+		var node = byId(id);
+		if (node) {
+			node.innerHTML = value;
+		}
+	}
+
+	function stateText(obj) {
+		if (!obj) return "-";
+		var items = [];
+		if (obj.state) items.push("状态：" + text(obj.state));
+		if (obj.tag) items.push("版本：" + text(obj.tag));
+		if (obj.arch) items.push("架构：" + text(obj.arch));
+		if (obj.asset) items.push("资源：" + text(obj.asset));
+		if (obj.message) items.push(text(obj.message));
+		if (obj.time) items.push("时间：" + text(obj.time));
+		return items.length ? items.join("<br />") : "-";
+	}
+
+	function webUrlHtml(v) {
+		if (v === null || v === undefined || v === "") return "-";
+		var raw = String(v);
+		var safe = escapeHtml(raw);
+		if (!/^https?:\/\/[^\s]+$/i.test(raw)) return safe;
+		return '<a href="' + safe + '" target="_blank" rel="noopener noreferrer">' + safe + "</a>";
+	}
+
+	function render(data) {
+		setBadge("web_status_badge", data.web_running);
+
+		setHtml("web_tag", text(data.web_tag));
+		setHtml("web_latest_tag", text(data.latest_web_tag));
+		setHtml("web_runtime", text(data.web_runtime));
+		setHtml("web_pid", data.web_running ? ("PID " + text(data.web_pid)) : "未运行");
+		setHtml("web_usage", [text(data.web_cpu, "0"), text(data.web_ram, "0 MB")].join(" / "));
+		setHtml("web_addr", text(data.web_host) + ":" + text(data.web_port));
+		setHtml("web_log_level", text(data.web_log_level));
+		setHtml("web_wan", yesNo(data.web_wan));
+		setHtml("web_url", webUrlHtml(data.web_url));
+		setHtml("web_download", stateText(data.web_download));
+	}
+
+	function updateStatus() {
+		XHR.get(statusUrl, null, function(x, data) {
+			if (!data) {
+				return;
+			}
+			render(data);
+		});
+	}
+
+	XHR.get(checkLatestUrl, null, function() {
+		updateStatus();
+	});
+	updateStatus();
+	window.setInterval(updateStatus, 5000);
+})();
+//]]>
+</script>
