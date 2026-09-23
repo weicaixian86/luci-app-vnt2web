@@ -496,7 +496,6 @@ local function summarize_web_config()
 		host = get_web_host(),
 		port = get_web_port(),
 		wan = uci_first("vnt2_web", "web_wan", "1"),
-		log_level = uci_first("vnt2_web", "log_level", "info"),
 		auto_download = uci_first("vnt2_web", "auto_download", "1"),
 		download_repo = uci_first("vnt2_web", "download_repo", "vnt-dev/vnt"),
 		download_tag = uci_first("vnt2_web", "download_tag", "latest"),
@@ -530,8 +529,6 @@ function act_status()
 	e.web_host = get_web_host()
 	e.web_port = get_web_port()
 	e.web_url = build_web_url()
-
-	e.web_log_level = web_cfg.log_level
 
 	e.download_log_size = #(get_log_content("/tmp/vnt2-download.log") or "")
 	e.web_download = web_dl

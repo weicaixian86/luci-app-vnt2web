@@ -6,7 +6,7 @@ local check_latest_url = dsp.build_url("admin", "vpn", "vnt2", "check_latest")
 
 <style type="text/css">
 	.vnt2-status-wrap {
-		margin: 6px 0 16px;
+		margin: 4px 0 12px;
 	}
 	.vnt2-status-grid {
 		display: block;
@@ -14,24 +14,25 @@ local check_latest_url = dsp.build_url("admin", "vpn", "vnt2", "check_latest")
 	.vnt2-card {
 		border: 1px solid var(--border-color-medium, var(--border-color-high, #d9d9d9));
 		border-radius: 4px;
-		padding: 10px 12px;
+		padding: 8px 10px;
 		background: var(--card-background, var(--panel-bg, var(--background-color, #fff)));
 		color: var(--text-color, inherit);
 		box-shadow: none;
+		font-size: 14px;
+		line-height: 1.5;
 	}
 	.vnt2-card h3 {
-		margin: 0 0 6px;
-		font-size: 14px;
-		line-height: 1.4;
+		margin: 0 0 4px;
+		font: inherit;
 		color: var(--text-color-high, var(--text-color, inherit));
 	}
 	.vnt2-badge {
 		display: inline-block;
 		min-width: 60px;
-		padding: 1px 7px;
+		padding: 0 7px;
 		border-radius: 3px;
-		font-size: 12px;
-		line-height: 20px;
+		font: inherit;
+		line-height: 1.5;
 		color: #fff;
 		text-align: center;
 		margin-left: 8px;
@@ -49,7 +50,7 @@ local check_latest_url = dsp.build_url("admin", "vpn", "vnt2", "check_latest")
 	.vnt2-card table {
 		width: 100%;
 		border-collapse: collapse;
-		font-size: 12px;
+		font: inherit;
 		background: transparent;
 		color: inherit;
 	}
@@ -61,7 +62,7 @@ local check_latest_url = dsp.build_url("admin", "vpn", "vnt2", "check_latest")
 	}
 	.vnt2-card td,
 	.vnt2-card th {
-		padding: 4px 0;
+		padding: 2px 0;
 		border-bottom: 1px dashed var(--border-color-low, var(--border-color-medium, #ececec));
 		vertical-align: top;
 		word-break: break-all;
@@ -91,7 +92,6 @@ local check_latest_url = dsp.build_url("admin", "vpn", "vnt2", "check_latest")
 				<tr><td>运行时长</td><td id="web_runtime">-</td></tr>
 				<tr><td>进程/PID</td><td id="web_pid">-</td></tr>
 				<tr><td>CPU / 内存</td><td id="web_usage">-</td></tr>
-				<tr><td>日志级别</td><td id="web_log_level">-</td></tr>
 				<tr><td>访问地址</td><td id="web_url">-</td></tr>
 				<tr><td>下载状态</td><td id="web_download">-</td></tr>
 			</table>
@@ -168,7 +168,6 @@ local check_latest_url = dsp.build_url("admin", "vpn", "vnt2", "check_latest")
 		setHtml("web_runtime", text(data.web_runtime));
 		setHtml("web_pid", data.web_running ? ("PID " + text(data.web_pid)) : "未运行");
 		setHtml("web_usage", [text(data.web_cpu, "0"), text(data.web_ram, "0 MB")].join(" / "));
-		setHtml("web_log_level", text(data.web_log_level));
 		setHtml("web_url", webUrlHtml(data.web_url));
 		setHtml("web_download", stateText(data.web_download));
 	}
