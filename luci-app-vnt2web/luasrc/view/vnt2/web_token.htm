@@ -1,0 +1,32 @@
+<%+cbi/valueheader%>
+<div style="display:flex; align-items:center; gap:8px;">
+	<input class="cbi-input-text" type="password"<%=attr("id", cbid) .. attr("name", cbid) .. attr("value", self:cfgvalue(section) or "") .. attr("placeholder", self.placeholder)%> />
+	<input class="btn cbi-button cbi-button-apply" type="button" value="*" title="<%:生成随机访问 Token%>" onclick="vnt2GenerateWebToken('<%=cbid%>');" />
+</div>
+<script type="text/javascript">
+//<![CDATA[
+function vnt2GenerateWebToken(id) {
+	var field = document.getElementById(id);
+	if (!field) {
+		return;
+	}
+
+	var bytes = new Uint8Array(24);
+	if (window.crypto && window.crypto.getRandomValues) {
+		window.crypto.getRandomValues(bytes);
+	} else {
+		for (var i = 0; i < bytes.length; i++) {
+			bytes[i] = Math.floor(Math.random() * 256);
+		}
+	}
+
+	var token = "";
+	for (var i = 0; i < bytes.length; i++) {
+		token += ("0" + bytes[i].toString(16)).slice(-2);
+	}
+	field.value = token;
+	field.dispatchEvent(new Event("change", { bubbles: true }));
+}
+//]]>
+</script>
+<%+cbi/valuefooter%>

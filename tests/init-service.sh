@@ -12,7 +12,9 @@ VERSION_WORKER_INIT_SCRIPT="${ROOT_DIR}/luci-app-vnt2web/root/etc/init.d/vnt2-ve
 VERSION_WORKER_SCRIPT="${ROOT_DIR}/luci-app-vnt2web/root/usr/libexec/vnt2/version-worker"
 PACKAGE_MAKEFILE="${ROOT_DIR}/luci-app-vnt2web/Makefile"
 CBI_SCRIPT="${ROOT_DIR}/luci-app-vnt2web/luasrc/model/cbi/vnt2.lua"
+CONTROLLER="${ROOT_DIR}/luci-app-vnt2web/luasrc/controller/vnt2.lua"
 STATUS_VIEW="${ROOT_DIR}/luci-app-vnt2web/luasrc/view/vnt2/vnt2_status.htm"
+TOKEN_VIEW="${ROOT_DIR}/luci-app-vnt2web/luasrc/view/vnt2/web_token.htm"
 
 fail() {
 	printf 'FAIL: %s\n' "$*" >&2
@@ -69,13 +71,51 @@ test_reload_only_queues_marker() {
 	printf 'PASS: reload only writes the restart marker\n'
 }
 
-test_luci_restart_marker_is_atomic() {
-	grep -Fq 'os.rename(temp, RESTART_PENDING_FILE)' "$CBI_SCRIPT" || \
-		fail "LuCI restart marker does not use atomic replacement"
-	if grep -Fq 'fs.writefile(RESTART_PENDING_FILE' "$CBI_SCRIPT"; then
-		fail "LuCI restart marker has a non-atomic direct-write fallback"
+test_luci_general_tab_omits_removed_controls() {
+	# These controls were removed from the LuCI page on request: the restart
+	# button, listen/WAN fields, open-page shortcut, auto-download switch,
+	# tag/repository fields, note credentials and the cmdline inspector.
+	for removed in \
+		'_restart_web' 'web_host' 'web_wan' '_open_web' \
+		'auto_download_web' 'download_tag_web' 'download_repo_web' \
+		'web_user' 'web_pass' '_web_cmd' 'vnt2_web_cmdline'
+	do
+		if grep -Fq "$removed" "$CBI_SCRIPT"; then
+			fail "LuCI page still renders removed control: ${removed}"
+		fi
+	done
+	for removed in 'vnt2_web_cmdline' 'get_cmdline'; do
+		if grep -Fq "$removed" "$CONTROLLER"; then
+			fail "controller still exposes removed endpoint: ${removed}"
+		fi
+	done
+	if grep -Fq 'RESTART_PENDING_FILE' "$CBI_SCRIPT"; then
+		fail "LuCI page still carries the restart-marker helper"
 	fi
-	printf 'PASS: LuCI restart marker only uses atomic replacement\n'
+	printf 'PASS: LuCI page omits the removed controls\n'
+}
+
+test_web_token_support() {
+	grep -Fq 'web_token' "$CBI_SCRIPT" || fail "LuCI page does not expose web_token"
+	grep -Fq 'web_token.password = true' "$CBI_SCRIPT" || fail "web_token is not a password field"
+	grep -Fq 'web_token.template = "vnt2/web_token"' "$CBI_SCRIPT" || fail "web_token does not use the custom token template"
+	grep -Fq 'local function generate_web_token()' "$CBI_SCRIPT" || fail "CBI does not generate a default token"
+	grep -Fq 'nixio.open("/dev/urandom", "r")' "$CBI_SCRIPT" || fail "CBI token generator does not read /dev/urandom"
+	grep -Fq 'crypto.getRandomValues' "$TOKEN_VIEW" || fail "token refresh button does not use browser secure randomness"
+	grep -Fq 'vnt2GenerateWebToken' "$TOKEN_VIEW" || fail "token refresh handler is missing"
+	grep -Fq 'field.value = token;' "$TOKEN_VIEW" || fail "token refresh handler does not fill the password field"
+
+	grep -Fq 'generate_web_token()' "$INIT_SCRIPT" || fail "init does not generate a missing token"
+	grep -Fq 'uci -q set "${CONF}.${cfg}.web_token=${token}"' "$INIT_SCRIPT" || fail "init does not persist a generated token"
+	grep -Fq 'procd_set_param command /bin/sh -c "exec \"${web_bin}\" --addr \"${web_addr}\" --conf \"${WEB_CONF_FILE}\" --token \"${web_token}\"' \
+		"$INIT_SCRIPT" || fail "init does not pass the token to vnt2_web"
+	grep -Fq '*[!0-9A-Za-z._~-]*' "$INIT_SCRIPT" || fail "init does not reject non URL-safe token characters"
+	grep -Fq '${#token}" -ge 16' "$INIT_SCRIPT" || fail "init does not enforce the minimum token length"
+
+	grep -Fq 'local function get_web_token()' "$CONTROLLER" || fail "controller does not read the web token"
+	grep -Fq '"?token=" .. url_encode(token)' "$CONTROLLER" || fail "status URL does not carry the encoded token"
+	grep -Fq "option web_token ''" "${ROOT_DIR}/luci-app-vnt2web/root/etc/config/vnt2" || fail "default config does not define web_token"
+	printf 'PASS: Web access token is generated, editable and linked safely\n'
 }
 
 test_worker_package_lifecycle() {
@@ -268,10 +308,16 @@ test_status_view_escaping() {
 	grep -Fq '.replace(/&/g, "&amp;")' "$STATUS_VIEW" || fail "status view does not escape ampersands"
 	grep -Fq '.replace(/</g, "&lt;")' "$STATUS_VIEW" || fail "status view does not escape opening brackets"
 	grep -Fq 'items.push(text(obj.message))' "$STATUS_VIEW" || fail "download status messages are not escaped"
-	grep -Fq 'items.push(text(v[i]))' "$STATUS_VIEW" || fail "status lists are not escaped"
 	grep -Fq '!/^https?:\/\/[^\s]+$/i.test(raw)' "$STATUS_VIEW" || fail "status Web links do not reject unsafe schemes"
 	grep -Fq 'rel="noopener noreferrer"' "$STATUS_VIEW" || fail "status Web links do not isolate the opener"
 	grep -Fq 'setHtml("web_url", webUrlHtml(data.web_url))' "$STATUS_VIEW" || fail "status Web URL bypasses safe rendering"
+	# The status card must not duplicate settings already shown in the basic
+	# tab or the log tabs.
+	for removed in 'web_addr' 'WAN 放行' 'vnt2-links'; do
+		if grep -Fq "$removed" "$STATUS_VIEW"; then
+			fail "status card still shows removed content: ${removed}"
+		fi
+	done
 	printf 'PASS: status values and Web links are safely rendered\n'
 }
 
@@ -309,7 +355,8 @@ test_upload_is_deferred_to_worker() {
 }
 
 test_reload_only_queues_marker
-test_luci_restart_marker_is_atomic
+test_luci_general_tab_omits_removed_controls
+test_web_token_support
 test_worker_package_lifecycle
 test_apply_stop_keeps_network
 test_start_service_propagates_component_failure

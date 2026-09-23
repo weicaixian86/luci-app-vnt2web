@@ -133,31 +133,38 @@ test_latest_release_endpoint_selection() {
 	load_function select_download_mirror
 	load_function get_release_api_candidates
 
-	# A `latest` request must try the newest release first, including
-	# pre-releases, and only then fall back to the stable channel.
+	# A `latest` request must resolve to the official stable Latest only.
+	# Pre-releases are never selected automatically.
 	latest_modes="$(get_release_query_modes latest)"
-	assert_equal "$(printf '%s\n' newest stable)" "$latest_modes" \
-		"latest no longer prioritises the newest release before stable"
-
-	newest_candidates="$(get_release_api_candidates vnt-dev/vnt latest gh-proxy newest)"
-	assert_equal "https://api.github.com/repos/vnt-dev/vnt/releases" "$newest_candidates" \
-		"newest query no longer uses the pre-release-inclusive Releases list"
-	if printf '%s\n' "$newest_candidates" | grep -q '/releases/latest$'; then
-		fail "newest query still uses the pre-release-excluding endpoint"
-	fi
+	assert_equal "stable" "$latest_modes" \
+		"latest no longer resolves to the stable channel only"
 
 	stable_candidates="$(get_release_api_candidates vnt-dev/vnt latest gh-proxy stable)"
 	assert_equal "https://api.github.com/repos/vnt-dev/vnt/releases/latest" "$stable_candidates" \
-		"stable fallback no longer uses the official stable latest endpoint"
+		"latest no longer uses the official stable latest endpoint"
 
 	legacy_candidates="$(get_release_api_candidates vnt-dev/vnt latest gh-proxy)"
-	assert_equal "$newest_candidates" "$legacy_candidates" \
-		"a bare latest request no longer defaults to the newest channel"
+	assert_equal "$stable_candidates" "$legacy_candidates" \
+		"a bare latest request no longer defaults to the stable channel"
 
-	# The pre-release-excluding endpoint may only appear inside the stable
-	# tier, never in the newest tier that a bare `latest` request uses.
-	if ! grep -Fq 'echo "https://api.github.com/repos/${repo}/releases/latest"' "$INIT_SCRIPT"; then
-		fail "init script no longer implements the stable fallback tier"
+	# Mirrors whose release lists mislabel pre-releases or omit the
+	# `prerelease` field must never resolve `latest`, even when the caller
+	# passes that mirror explicitly.
+	for unsafe_mirror in gitee gitlab cloudflare; do
+		unsafe_candidates="$(get_release_api_candidates vnt-dev/vnt latest "$unsafe_mirror" stable)"
+		assert_equal "https://api.github.com/repos/vnt-dev/vnt/releases/latest" "$unsafe_candidates" \
+			"${unsafe_mirror} no longer falls back to the official stable endpoint"
+	done
+
+	# The pre-release-inclusive Releases list must not be used to resolve
+	# `latest` any more.
+	for stable_mirror in github gh-proxy custom; do
+		stable_only="$(get_release_api_candidates vnt-dev/vnt latest "$stable_mirror" stable)"
+		assert_equal "https://api.github.com/repos/vnt-dev/vnt/releases/latest" "$stable_only" \
+			"${stable_mirror} latest query no longer uses the stable-only endpoint"
+	done
+	if grep -Fq 'api.github.com/repos/${repo}/releases"' "$INIT_SCRIPT"; then
+		fail "init script still resolves latest from the pre-release-inclusive Releases list"
 	fi
 
 	fixed_modes="$(get_release_query_modes v2.0.9)"
@@ -168,52 +175,37 @@ test_latest_release_endpoint_selection() {
 		"https://api.github.com/repos/vnt-dev/vnt/releases/tags/2.0.9" \
 		"https://api.github.com/repos/vnt-dev/vnt/releases/tags/v2.0.9")" \
 		"$fixed_candidates" "fixed tag still resolves through the tag endpoints"
-	printf 'PASS: latest prefers the newest release and falls back to stable\n'
+	printf 'PASS: latest resolves to the official stable release only\n'
 }
 
-test_stable_release_selection() {
-	# This helper contains an embedded awk program whose closing braces start
-	# at column 0, so extract it by range instead of by brace matching.
-	definition="$(awk '
-		/^extract_first_stable_release_object\(\) \{/ { copying = 1 }
-		/^extract_release_object_by_tag\(\) \{/ { exit }
-		copying { print }
-	' "$INIT_SCRIPT")"
-	[ -n "$definition" ] || fail "extract_first_stable_release_object was not found"
-	eval "$definition"
+test_release_query_mirror_filtering() {
+	load_function trim_value
+	load_function normalize_download_mirror
+	load_function get_download_mirror_candidates
+	load_function get_release_query_mirror_candidates
 
-	dir="$(mktemp -d)"
-	trap 'rm -rf "$dir"' EXIT INT TERM
+	# `latest` may only be resolved from sources that serve GitHub's own
+	# stable metadata. Hand-synced mirrors are skipped entirely.
+	auto_latest="$(get_release_query_mirror_candidates vnt-dev/vnt auto latest)"
+	assert_equal "$(printf '%s\n' gh-proxy github)" "$auto_latest" \
+		"automatic latest filtering no longer keeps only GitHub-backed mirrors"
 
-	cat >"$dir/releases.json" <<'EOF'
-[
-  {"tag_name":"v2.0.9","prerelease":true,"draft":false,"assets":[{"name":"newest"}]},
-  {"tag_name":"v2.0.8","prerelease":false,"draft":false,"assets":[{"name":"stable"}]},
-  {"tag_name":"v2.0.7","prerelease":false,"draft":false,"assets":[{"name":"older"}]}
-]
-EOF
-	extract_first_stable_release_object "$dir/releases.json" "$dir/stable.json" || \
-		fail "no stable release was extracted"
-	grep -Fq '"tag_name":"v2.0.8"' "$dir/stable.json" || \
-		fail "stable selection did not skip the pre-release entry"
-	if grep -Fq '"tag_name":"v2.0.9"' "$dir/stable.json"; then
-		fail "stable selection still picked the pre-release entry"
-	fi
+	custom_latest="$(get_release_query_mirror_candidates vnt-dev/vnt custom latest)"
+	assert_equal "$(printf '%s\n' custom github)" "$custom_latest" \
+		"custom latest filtering dropped the custom or GitHub source"
 
-	cat >"$dir/draft.json" <<'EOF'
-[
-  {"tag_name":"v2.0.9","prerelease":false,"draft":true,"assets":[{"name":"draft"}]},
-  {"tag_name":"v2.0.8","prerelease":false,"draft":false,"assets":[{"name":"stable"}]}
-]
-EOF
-	extract_first_stable_release_object "$dir/draft.json" "$dir/stable2.json" || \
-		fail "draft release caused stable selection to fail"
-	grep -Fq '"tag_name":"v2.0.8"' "$dir/stable2.json" || \
-		fail "stable selection did not skip the draft entry"
+	for unsafe_mirror in gitee gitlab cloudflare; do
+		unsafe_latest="$(get_release_query_mirror_candidates vnt-dev/vnt "$unsafe_mirror" latest)"
+		assert_equal "github" "$unsafe_latest" \
+			"${unsafe_mirror} latest filtering no longer narrows to GitHub"
+	done
 
-	rm -rf "$dir"
-	trap - EXIT INT TERM
-	printf 'PASS: stable fallback skips pre-release and draft entries\n'
+	# A fixed tag keeps the full configured mirror order, because any mirror
+	# that carries the requested tag is safe to use.
+	fixed_candidates="$(get_release_query_mirror_candidates vnt-dev/vnt auto v2.0.8)"
+	assert_equal "$(printf '%s\n' gh-proxy github gitee gitlab cloudflare)" "$fixed_candidates" \
+		"fixed tag filtering removed usable mirrors"
+	printf 'PASS: latest queries only trust GitHub-backed release metadata\n'
 }
 
 test_elf_header_detection() {
@@ -315,7 +307,7 @@ test_custom_url_handling
 test_defaults_and_retry_limits
 test_release_tag_matching
 test_latest_release_endpoint_selection
-test_stable_release_selection
+test_release_query_mirror_filtering
 test_elf_header_detection
 test_download_timeouts_and_archive_checks
 test_archive_safety

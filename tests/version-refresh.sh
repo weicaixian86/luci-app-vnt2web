@@ -90,8 +90,8 @@ test_local_version_state() {
 test_release_refresh_path() {
 	definition="$(shell_function refresh_latest_version_for_section)"
 	[ -n "$definition" ] || fail "refresh_latest_version_for_section was not found"
-	printf '%s\n' "$definition" | grep -Fq 'get_download_mirror_candidates' || \
-		fail "latest-version refresh does not use configured mirror candidates"
+	printf '%s\n' "$definition" | grep -Fq 'get_release_query_mirror_candidates' || \
+		fail "latest-version refresh does not restrict itself to trusted release sources"
 	printf '%s\n' "$definition" | grep -Fq 'fetch_release_metadata_from_mirror "$repo" "latest"' || \
 		fail "latest-version refresh does not query the latest Release interface"
 	printf '%s\n' "$definition" | grep -Fq 'write_latest_release_cache' || \
@@ -100,8 +100,11 @@ test_release_refresh_path() {
 		fail "latest-version refresh does not identify its cache as a latest query"
 	grep -Fq '[ "$cache_scope" = "latest" ] || return 0' "$INIT_SCRIPT" || \
 		fail "fixed-tag downloads are not excluded from latest-version cache writes"
-	grep -Fq 'fallback:*) ;;' "$INIT_SCRIPT" || \
-		fail "built-in fallback metadata is not excluded from latest-version cache writes"
+	grep -Fq 'get_release_api_candidates "$repo" "$tag" "$effective_mirror" "$query_mode"' "$INIT_SCRIPT" || \
+		fail "init script does not resolve release metadata through the candidate helper"
+	if grep -Fq 'write_latest_release_cache "$download_mirror"' "$INIT_SCRIPT"; then
+		fail "download path still writes the latest-version cache"
+	fi
 	grep -Fq 'vnt2_latest_v3_' "$CONTROLLER" || fail "controller does not read the canonical latest cache"
 	grep -Fq 'vnt2_latest_v3_' "$INIT_SCRIPT" || fail "init script does not write the canonical latest cache"
 	if grep -Fq 'vnt2_latest_v2_' "$CONTROLLER"; then
@@ -109,7 +112,7 @@ test_release_refresh_path() {
 	fi
 	grep -Fq 'refresh_latest_versions </dev/null >/dev/null 2>&1' "$WORKER" || \
 		fail "version worker does not run independently from LuCI"
-	printf 'PASS: worker queries latest Releases through configured mirrors and caches tags\n'
+	printf 'PASS: worker queries the stable latest Release and owns the version cache\n'
 }
 
 test_latest_cache_scope() {

@@ -96,7 +96,6 @@ local log_message_pattern_rules = {
 	{ "^web installed: web=(.+)$", "Web 安装完成：web=%1" },
 	{ "^all download mirrors failed repo=(.+) tag=(.+) mode=(.+) strategy=(.+) arch=(.+) scope=(.+)$", "所有下载镜像均失败：repo=%1 tag=%2 mode=%3 strategy=%4 arch=%5 scope=%6" },
 	{ "^all download mirrors failed repo=(.+) tag=(.+) strategy=(.+) arch=(.+) scope=(.+)$", "所有下载镜像均失败：repo=%1 tag=%2 strategy=%3 arch=%4 scope=%5" },
-	{ "^falling back to the stable latest release scope=(.+)$", "正在回退到稳定版最新发行版：scope=%1" },
 	{ "^(.+) auto download failed, fallback to uploaded binary (.+)$", "%1 自动下载失败，已回退到已上传程序：%2" }
 }
 

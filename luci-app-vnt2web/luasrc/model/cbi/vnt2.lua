@@ -2,12 +2,9 @@ local http = require "luci.http"
 local fs = require "nixio.fs"
 local nixio = require "nixio"
 local util = require "luci.util"
-local sys = require "luci.sys"
 local uci = require "luci.model.uci".cursor()
-local dispatcher = require "luci.dispatcher"
 local toml = require "luci.model.vnt2_toml"
 
-local RESTART_PENDING_FILE = "/tmp/vnt2-restart.pending"
 local UPLOAD_DIR = "/etc/vnt2/upload"
 local UPLOAD_PENDING_FILE = "/etc/vnt2/upload.pending"
 local MAX_UPLOAD_SIZE = 256 * 1024 * 1024
@@ -20,23 +17,6 @@ m.description = translate(
 )
 
 m:section(SimpleSection).template = "vnt2/vnt2_status"
-
-local function schedule_vnt2_restart()
-	local value = tostring(os.time()) .. "\n"
-	local stat = fs.readfile("/proc/self/stat") or ""
-	local pid = stat:match("^(%d+)") or tostring(os.time())
-	local temp = string.format("%s.%s", RESTART_PENDING_FILE, pid)
-
-	if not fs.writefile(temp, value) then
-		fs.remove(temp)
-		return false
-	end
-	if not os.rename(temp, RESTART_PENDING_FILE) then
-		fs.remove(temp)
-		return false
-	end
-	return true
-end
 
 local function trim(v)
 	if v == nil then
@@ -55,21 +35,6 @@ local function trim(v)
 	return ""
 end
 
-local function process_running(name)
-	return sys.exec("pidof " .. util.shellquote(name) .. " 2>/dev/null"):match("%d+") ~= nil
-end
-
-local function render_pre_content(content)
-	content = trim(content)
-	if content == "" then
-		content = translate("暂无数据")
-	end
-	return "<pre style='white-space:pre-wrap;word-break:break-all;'>" .. util.pcdata(content) .. "</pre>"
-end
-
-local function render_pre(path)
-	return render_pre_content(fs.readfile(path) or "")
-end
 -- CBI validators may need values from sibling fields in the same form post.
 local cbi_options = {}
 
@@ -194,6 +159,32 @@ local function validate_nonempty(self, value)
 		return nil, translate("该字段不能为空")
 	end
 	return value
+end
+
+local function generate_web_token()
+	local fd = nixio.open("/dev/urandom", "r")
+	local bytes
+	if fd then
+		bytes = fd:read(24)
+		fd:close()
+	end
+	if type(bytes) == "string" and #bytes == 24 then
+		return (bytes:gsub(".", function(c)
+			return string.format("%02x", string.byte(c))
+		end))
+	end
+
+	local seed = table.concat({
+		tostring(os.time()),
+		tostring(os.clock()),
+		tostring(math.random()),
+		tostring({}),
+	}, ":")
+	local value = ""
+	for i = 1, #seed do
+		value = value .. string.format("%02x", string.byte(seed, i) or 0)
+	end
+	return value:sub(1, 48)
 end
 
 local function normalized_list_values(value)
@@ -928,17 +919,13 @@ local function bind_custom_download_mirror(option, mirror_option)
 	end
 end
 
-local web_enabled_state = m.uci:get_first("vnt2", "vnt2_web", "enabled") == "1"
-local web_running = web_enabled_state and process_running("vnt2_web")
-
 -- ==================== vnt2_web ====================
 ;(function()
-local w = m:section(TypedSection, "vnt2_web", translate("vnt2_web 客户端设置"))
+local w = m:section(TypedSection, "vnt2_web", translate("vnt2_web 客户端状态"))
 w.anonymous = true
 w.addremove = false
 
 w:tab("general", translate("基本设置"))
-w:tab("advanced", translate("高级设置"))
 w:tab("upload", translate("上传程序"))
 
 local web_enabled = w:taboption("general", Flag, "enabled", translate("启用web 客户端"))
@@ -948,105 +935,61 @@ web_enabled.write = function(self, section, value)
 	self.map.uci:set(self.map.config, section, self.option, value)
 end
 
-local web_restart = w:taboption("general", Button, "_restart_web", translate("重启客户端"))
-web_restart.inputtitle = translate("重启")
-web_restart.inputstyle = "apply"
-web_restart.description = translate("在未修改参数时快速重启 vnt2_web")
-web_restart:depends("enabled", "1")
-web_restart.write = function()
-	schedule_vnt2_restart()
-end
-
-local web_conf_path = w:taboption("advanced", DummyValue, "_web_conf_path", translate("配置文件路径"),
+local web_conf_path = w:taboption("general", DummyValue, "_web_conf_path", translate("配置文件路径"),
 	translate("运行时配置文件位置固定为 /etc/config/vnt2.toml，不允许在页面中修改"))
 web_conf_path.cfgvalue = function()
 	return "/etc/config/vnt2.toml"
 end
 
-local auto_download_web = w:taboption("advanced", Flag, "auto_download", translate("自动下载程序"),
-	translate("当本地缺少 vnt2_web 时，自动从所选镜像源的 Releases 下载匹配当前架构的发行包"))
-auto_download_web.rmempty = false
-auto_download_web.default = "1"
-
-local download_mirror_web = w:taboption("advanced", ListValue, "download_mirror", translate("Web 下载镜像源"),
-	translate("自动依次尝试 gh-proxy、GitHub、Gitee、GitLab、Cloudflare R2，每个源最多重试 3 次；客户端 ZIP 必须包含 vnt2_web"))
+local download_mirror_web = w:taboption("general", ListValue, "download_mirror", translate("Web 下载镜像源"),
+	translate("自动依次尝试 gh-proxy、GitHub、Gitee、GitLab、Cloudflare R2，每个源最多重试 3 次；latest 只从 GitHub 官方接口解析稳定版，Gitee、GitLab、Cloudflare R2 仅用于下载指定版本"))
 bind_download_mirror(download_mirror_web)
-local custom_download_mirror_web = w:taboption("advanced", Value, "custom_download_mirror", translate("Web 自定义镜像地址"))
+local custom_download_mirror_web = w:taboption("general", Value, "custom_download_mirror", translate("Web 自定义镜像地址"))
 bind_custom_download_mirror(custom_download_mirror_web, "download_mirror")
-
-local download_tag_web = w:taboption("advanced", Value, "download_tag", translate("Web 下载版本"),
-	translate("填写 latest 时优先获取包含预发布版本的最新发行版，失败后回退稳定版；也可填写指定 Release 标签，如 v2.0.18"))
-download_tag_web.placeholder = "latest"
-download_tag_web.default = "latest"
-download_tag_web.validate = validate_nonempty
-
-local download_repo_web = w:taboption("advanced", Value, "download_repo", translate("Web 下载仓库"),
-	translate("默认 vnt-dev/vnt；如需使用 Gitee、GitLab、Cloudflare 等镜像，建议保持默认仓库"))
-download_repo_web.placeholder = "vnt-dev/vnt"
-download_repo_web.default = "vnt-dev/vnt"
-download_repo_web.validate = validate_nonempty
 
 local vnt2_web_bin = w:taboption("general", Value, "vnt2_web_bin", translate("vnt2_web 程序路径"),
 	translate("默认 /usr/bin/vnt2_web；若不存在，将优先尝试自动下载，失败后回退到已上传并安装到 /usr/bin 的程序"))
 vnt2_web_bin.placeholder = "/usr/bin/vnt2_web"
 vnt2_web_bin.validate = validate_nonempty
 
-local web_host = w:taboption("general", Value, "web_host", translate("监听地址"),
-	translate("默认监听 0.0.0.0，允许局域网或其他外部设备访问；如需限制仅本机访问，可改为 127.0.0.1"))
-web_host.placeholder = "0.0.0.0"
-web_host.default = "0.0.0.0"
-web_host.datatype = "ipaddr"
-
 local web_port = w:taboption("general", Value, "web_port", translate("监听端口"))
 web_port.placeholder = "19099"
 web_port.datatype = "port"
 
-local web_wan = w:taboption("general", Flag, "web_wan", translate("允许 WAN 访问"),
-	translate("默认启用；当监听地址为 0.0.0.0 或 :: 时会自动创建 WAN 放行规则"))
-web_wan.rmempty = false
-web_wan.default = "1"
-
-local open_web = w:taboption("general", DummyValue, "_open_web", translate("打开 Web 页面"),
-	translate("打开当前配置对应的 Web 管理页面，默认地址通常为 http://路由器IP:19099/"))
-open_web.rawhtml = true
-open_web.cfgvalue = function()
-	return string.format(
-		'<a class="btn cbi-button cbi-button-apply" href="%s" target="_blank" rel="noopener noreferrer">%s</a>',
-		util.pcdata(dispatcher.build_url("admin", "vpn", "vnt2", "open_web")),
-		util.pcdata(translate("打开 Web 页面"))
-	)
-end
-
-local web_user = w:taboption("advanced", Value, "web_user", translate("页面备注用户名"),
-	translate("当前原生 vnt2_web 未由本 LuCI 页面接管认证，此处仅作为备注保存"))
-web_user.placeholder = "admin"
-
-local web_pass = w:taboption("advanced", Value, "web_pass", translate("页面备注密码"),
-	translate("当前原生 vnt2_web 未由本 LuCI 页面接管认证，此处仅作为备注保存"))
-web_pass.password = true
-
-local log_level = w:taboption("advanced", ListValue, "log_level", translate("日志级别"),
+local log_level = w:taboption("general", ListValue, "log_level", translate("日志级别"),
 	translate("通过环境变量 RUST_LOG 注入给 vnt2_web"))
 for _, lv in ipairs({ "error", "warn", "info", "debug", "trace" }) do
 	log_level:value(lv, lv)
 end
 log_level.default = "info"
 
-local web_cmd = w:taboption("advanced", Button, "_web_cmd", translate("读取 Web 启动参数"))
-web_cmd.inputtitle = translate("刷新")
-web_cmd.inputstyle = "apply"
-web_cmd.write = function()
-	if web_running then
-		sys.call("tr '\\000' ' ' </proc/$(pidof vnt2_web | awk '{print $1}')/cmdline >/tmp/vnt2-web_cmd 2>/dev/null")
-	else
-		sys.call("echo '错误：程序未运行！请先启动 vnt2_web。' >/tmp/vnt2-web_cmd")
+local web_token = w:taboption("general", Value, "web_token", translate("访问 Token"),
+	translate("Web API 访问令牌，至少 16 个字符；可直接输入，或点击右侧星号生成随机令牌"))
+web_token.password = true
+web_token.placeholder = translate("点击星号生成随机令牌")
+web_token.template = "vnt2/web_token"
+web_token.validate = function(self, value)
+	value = trim(value)
+	if value == "" then
+		return nil, translate("访问 Token 不能为空，请点击星号生成或手动输入")
 	end
+	if #value < 16 then
+		return nil, translate("访问 Token 至少需要 16 个字符")
+	end
+	if value:find("[^%w%._~-]", 1) then
+		return nil, translate("访问 Token 只能包含字母、数字、点、下划线、波浪线和连字符")
+	end
+	return value
 end
-
-local web_cmd_content = w:taboption("advanced", DummyValue, "_web_cmd_content")
-web_cmd_content.rawhtml = true
-web_cmd_content.cfgvalue = function()
-	return render_pre("/tmp/vnt2-web_cmd")
+web_token.cfgvalue = function(self, section)
+	local value = AbstractValue.cfgvalue(self, section)
+	value = trim(value)
+	if value ~= "" then
+		return value
+	end
+	value = generate_web_token()
+	self.map.uci:set(self.map.config, section, self.option, value)
+	return value
 end
 
 local web_upload = w:taboption("upload", FileUpload, "upload_web")

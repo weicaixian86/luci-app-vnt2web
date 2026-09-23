@@ -14,24 +14,42 @@ OpenWrt 软件包管理器中的实际包名固定为：
 
 ## 发布文件说明
 
-GitHub Release 中发布的安装文件，直接保留 OpenWrt 实际生成的文件名。
-工作流不会改写版本号、发布号或架构，文件名由 OpenWrt 打包过程决定，
-但软件包名前缀始终为：
+工作流会先校验 OpenWrt 实际产物唯一且以 `luci-app-vnt2web` 为前缀，
+再按 Release tag 统一重命名为固定的发布文件名。
+软件包名前缀始终为：
 
 - `luci-app-vnt2web`
 
-因此不同 SDK 版本下的文件名可能不同，例如：
+最终发布文件名规则：
 
-- `luci-app-vnt2web_2.0.53-2_x86_64.ipk`
-- `luci-app-vnt2web-2.0.53-r2.apk`
+- `luci-app-vnt2web_<版本>-x86_64.ipk`
+- `luci-app-vnt2web_<版本>-x86_64.apk`
 
-请以 Release 页面中实际列出的文件名为准，不要按固定模板猜测。
+其中 `<版本>` 取自 Release tag，并去掉开头的 `v` 或 `V`。例如 tag 为
+`v2.0.40` 时，发布文件为：
+
+- `luci-app-vnt2web_2.0.40-x86_64.ipk`
+- `luci-app-vnt2web_2.0.40-x86_64.apk`
 
 ## 上传与版本说明
 
 - 手动上传由 LuCI 暂存到 `/etc/vnt2/upload`，随后交给后台 worker 校验并安装，不会阻塞页面请求。
 - 安装成功后程序位于 `/usr/bin/vnt2_web`，并自动排队重启服务。
 - 本地版本来自 `/etc/config/vnt2-web.version`；若程序被替换或修改，本地版本会显示为空，而不是显示过期版本。
+
+## Web 访问令牌
+
+- `vnt2_web` 的 Web API 通过访问令牌保护。
+- 首次使用或令牌为空时，插件会自动生成随机令牌并保存到 `web_token`。
+- LuCI 基本设置中的“访问 Token”可以直接手动输入；右侧星号按钮会生成新的随机令牌。
+- 状态页“访问地址”会自动携带 URL 编码后的 `?token=...`，点击链接可直接进入 Web 页面。
+
+## 自动下载版本说明
+
+- 下载版本填写 `latest` 时，只获取仓库官方稳定版 Latest，不会自动下载预发布版本。
+- `latest` 只通过 GitHub 官方 `/releases/latest` 接口解析，该接口按定义排除预发布版本和草稿版本。
+- `latest` 不设硬编码兜底版本；解析失败时报告失败，并回退到手动上传的程序。
+- `Gitee`、`GitLab`、`Cloudflare R2` 的 Release 列表为手工同步，无法可靠标识稳定版，因此解析 `latest` 时会跳过这些镜像并回退 GitHub 官方接口；它们仍可用于下载指定 tag 的资产。
 
 ## 安装方法
 

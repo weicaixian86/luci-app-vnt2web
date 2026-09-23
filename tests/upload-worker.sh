@@ -52,7 +52,7 @@ queue_file() {
 		sleep 1
 		remaining=$((remaining - 1))
 	done
-	[ ! -e "$dir/upload.claimed" ] || fail "worker did not become idle before the next upload"
+	wait_for_removed "$dir/upload.claimed" 10 || fail "worker did not become idle before the next upload"
 
 	counter="$(cat "$dir/counter" 2>/dev/null || printf '0')"
 	counter=$((counter + 1))
@@ -81,6 +81,20 @@ wait_for_state() {
 		if [ -f "$file" ] && [ "$(sed -n 's/^state=//p' "$file" | head -n1)" = "$wanted" ]; then
 			return 0
 		fi
+		sleep 1
+		remaining=$((remaining - 1))
+	done
+	return 1
+}
+
+wait_for_removed() {
+	file="$1"
+	remaining="${2:-10}"
+
+	# The worker publishes the terminal state just before it releases its claim
+	# marker, so callers must poll instead of asserting immediately.
+	while [ "$remaining" -gt 0 ]; do
+		[ ! -e "$file" ] && return 0
 		sleep 1
 		remaining=$((remaining - 1))
 	done
@@ -198,7 +212,7 @@ EOF
 	esac
 	[ ! -e "$dir/upload/incoming.1" ] || fail "staged upload was not removed after install"
 	[ ! -e "$dir/upload.pending" ] || fail "pending marker was not claimed"
-	[ ! -e "$dir/upload.claimed" ] || fail "claimed marker was not removed"
+	wait_for_removed "$dir/upload.claimed" 10 || fail "claimed marker was not removed"
 
 	# A nested archive is accepted and its vnt2_web entry is installed.
 	mkdir -p "$dir/nested/pkg"

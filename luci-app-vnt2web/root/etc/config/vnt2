@@ -8,6 +8,7 @@ config vnt2_web
 	option web_host '0.0.0.0'
 	option web_port '19099'
 	option web_wan '1'
+	option web_token ''
 	option web_user 'admin'
 	option web_pass ''
 	option log_level 'info'

@@ -64,6 +64,11 @@ check_project_contracts() {
 		fail "runtime TOML path is not fixed in the init script"
 	grep -Fq 'M.TOML_FILE = "/etc/config/vnt2.toml"' "$SOURCE_DIR/luasrc/model/vnt2_toml.lua" ||
 		fail "runtime TOML path is not fixed in the Lua TOML module"
+	grep -Fq 'option web_token' "$SOURCE_DIR/root/etc/config/vnt2" ||
+		fail "default config does not define web_token"
+	grep -Fq 'procd_set_param command /bin/sh -c "exec \"${web_bin}\" --addr \"${web_addr}\" --conf \"${WEB_CONF_FILE}\" --token \"${web_token}\"' \
+		"$SOURCE_DIR/root/etc/init.d/vnt2" ||
+		fail "init script does not pass web_token to vnt2_web"
 	if grep -Fq 'web_conf_file' \
 		"$SOURCE_DIR/root/etc/config/vnt2" \
 		"$SOURCE_DIR/root/etc/init.d/vnt2" \
@@ -77,6 +82,20 @@ check_project_contracts() {
 		fail "build workflow is not manually triggered"
 	grep -Fq "printf '编译时间: %s\\n'" "$workflow" ||
 		fail "release body does not contain the expected build time label"
+	# Release assets must use the deterministic published name derived from the
+	# release tag, not the raw OpenWrt package file name.
+	grep -Fq 'FINAL_PACKAGE_FILE="${PACKAGE_NAME}_${RELEASE_VERSION}-x86_64.${{ matrix.package_format }}"' "$workflow" ||
+		fail "release asset name does not follow luci-app-vnt2web_<version>-x86_64.<format>"
+	grep -Fq 'RELEASE_VERSION="${RAW_TAG#v}"' "$workflow" ||
+		fail "release asset version is not derived from the release tag"
+	grep -Fq 'test "${#package_files[@]}" -eq 1' "$workflow" ||
+		fail "workflow does not require exactly one OpenWrt package artifact"
+	grep -Fq '${PACKAGE_NAME}"[-_]*) ;;' "$workflow" ||
+		fail "workflow does not verify the OpenWrt package name prefix"
+	grep -Fq 'release-assets/*.ipk' "$workflow" ||
+		fail "release does not upload the IPK artifact"
+	grep -Fq 'release-assets/*.apk' "$workflow" ||
+		fail "release does not upload the APK artifact"
 	printf 'PASS: package identity, fixed TOML path, and removed-component checks passed\n'
 }
 

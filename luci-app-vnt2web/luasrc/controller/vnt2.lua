@@ -19,18 +19,12 @@ function index()
 
 	entry({ "admin", "vpn", "vnt2" }, alias("admin", "vpn", "vnt2", "config"), _("VNT2"), 45).dependent = true
 	entry({ "admin", "vpn", "vnt2", "config" }, cbi("vnt2"), _("基本设置"), 10).leaf = true
-	entry({ "admin", "vpn", "vnt2", "web_log" }, cbi("vnt2_web_log"), _("Web 日志"), 30).leaf = true
-	entry({ "admin", "vpn", "vnt2", "download_log" }, cbi("vnt2_download_log"), _("下载日志"), 50).leaf = true
+	entry({ "admin", "vpn", "vnt2", "runtime_log" }, cbi("vnt2_runtime_log"), _("运行日志"), 30).leaf = true
 
 	entry({ "admin", "vpn", "vnt2", "status" }, call("act_status")).leaf = true
 	entry({ "admin", "vpn", "vnt2", "check_latest" }, call("act_check_latest")).leaf = true
-	entry({ "admin", "vpn", "vnt2", "get_web_log" }, call("get_web_log")).leaf = true
-	entry({ "admin", "vpn", "vnt2", "clear_web_log" }, call("clear_web_log")).leaf = true
-	entry({ "admin", "vpn", "vnt2", "get_download_log" }, call("get_download_log")).leaf = true
-	entry({ "admin", "vpn", "vnt2", "clear_download_log" }, call("clear_download_log")).leaf = true
-
-	entry({ "admin", "vpn", "vnt2", "vnt2_web_cmdline" }, call("vnt2_web_cmdline")).leaf = true
-	entry({ "admin", "vpn", "vnt2", "open_web" }, call("open_web")).leaf = true
+	entry({ "admin", "vpn", "vnt2", "get_runtime_log" }, call("get_runtime_log")).leaf = true
+	entry({ "admin", "vpn", "vnt2", "clear_runtime_log" }, call("clear_runtime_log")).leaf = true
 end
 
 local function trim(s)
@@ -78,6 +72,21 @@ end
 
 local function get_web_host()
 	return uci_first("vnt2_web", "web_host", "0.0.0.0")
+end
+
+local function get_web_token()
+	local token = trim(uci_first("vnt2_web", "web_token", ""))
+	if #token < 16 or token:find("[^%w%._~-]", 1) then
+		return ""
+	end
+	return token
+end
+
+local function url_encode(value)
+	value = tostring(value or "")
+	return (value:gsub("([^%w%-%._~])", function(char)
+		return string.format("%%%02X", string.byte(char))
+	end))
 end
 
 
@@ -436,14 +445,6 @@ end
 
 
 
-local function get_cmdline(pid)
-	if not pid then
-		return ""
-	end
-	return trim(sys.exec("tr '\\000' ' ' </proc/" .. tostring(pid) .. "/cmdline 2>/dev/null"))
-end
-
-
 local function get_router_host()
 	local http_host = trim(http.getenv("HTTP_HOST") or "")
 	if http_host ~= "" then
@@ -475,12 +476,17 @@ end
 local function build_web_url()
 	local host = get_router_host()
 	local port = get_web_port()
+	local token = get_web_token()
 
 	if host:find(":", 1, true) and not host:match("^%[.*%]$") then
 		host = "[" .. host .. "]"
 	end
 
-	return "http://" .. host .. ":" .. tostring(port) .. "/"
+	local url = "http://" .. host .. ":" .. tostring(port) .. "/"
+	if token ~= "" then
+		url = url .. "?token=" .. url_encode(token)
+	end
+	return url
 end
 
 
@@ -526,12 +532,6 @@ function act_status()
 	e.web_url = build_web_url()
 
 	e.web_log_level = web_cfg.log_level
-	e.web_wan = web_cfg.wan
-	e.web_auto_download = web_cfg.auto_download
-	e.web_download_repo = web_cfg.download_repo
-	e.web_download_tag = web_cfg.download_tag
-	e.web_download_mirror = web_cfg.download_mirror
-	e.web_custom_download_mirror = web_cfg.custom_download_mirror
 
 	e.download_log_size = #(get_log_content("/tmp/vnt2-download.log") or "")
 	e.web_download = web_dl
@@ -548,44 +548,42 @@ end
 
 
 
-function get_web_log()
-	plain_write(get_log_content("/tmp/vnt2-web.log", LOG_DISPLAY_LINES))
+local function write_runtime_log()
+	local lines = {}
+	for _, source in ipairs({
+		{ path = "/tmp/vnt2-web.log", label = "vnt2-web" },
+		{ path = "/tmp/vnt2-download.log", label = "download" }
+	}) do
+		local content = get_log_content(source.path, LOG_DISPLAY_LINES)
+		for line in (content .. "\n"):gmatch("(.-)\n") do
+			if line ~= "" then
+				local timestamp = line:match("^(%d%d%d%d%-%d%d%-%d%d %d%d:%d%d:%d%d)") or ""
+				lines[#lines + 1] = { timestamp = timestamp, text = line }
+			end
+		end
+	end
+	table.sort(lines, function(a, b)
+		if a.timestamp == b.timestamp then
+			return a.text < b.text
+		end
+		if a.timestamp == "" then return false end
+		if b.timestamp == "" then return true end
+		return a.timestamp < b.timestamp
+	end)
+	local output = {}
+	for _, line in ipairs(lines) do
+		output[#output + 1] = line.text
+	end
+	plain_write(table.concat(output, "\n"))
 end
 
-function clear_web_log()
+function get_runtime_log()
+	write_runtime_log()
+end
+
+function clear_runtime_log()
 	clear_log_file("/tmp/vnt2-web.log")
-	json_write({ ok = true })
-end
-
-
-
-function get_download_log()
-	plain_write(get_log_content("/tmp/vnt2-download.log", LOG_DISPLAY_LINES))
-end
-
-function clear_download_log()
 	clear_log_file("/tmp/vnt2-download.log")
 	fs.remove("/tmp/vnt2-download-web.state")
 	json_write({ ok = true })
-end
-
-
-
-
-
-
-function vnt2_web_cmdline()
-	local pid = get_pid_by_path(get_web_bin())
-	local cmdline = get_cmdline(pid)
-
-	if cmdline == "" then
-		cmdline = "错误：vnt2_web 未运行。"
-	end
-
-	json_write({ cmdline = cmdline })
-end
-
-
-function open_web()
-	http.redirect(build_web_url())
 end
