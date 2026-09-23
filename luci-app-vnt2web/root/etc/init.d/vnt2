@@ -402,8 +402,9 @@ download_file() {
 	local downloader
 	local rc
 	local actual_url
+	local timeout_cmd=""
 	local connect_timeout=20
-	local transfer_timeout=600
+	local transfer_timeout=180
 
 	if [ "$purpose" = "api" ]; then
 		connect_timeout=10
@@ -413,6 +414,11 @@ download_file() {
 	downloader="$(get_downloader "$purpose")" || return 1
 	DOWNLOAD_LAST_TOOL="$downloader"
 	DOWNLOAD_LAST_URL=""
+	DOWNLOAD_LAST_RC=""
+	DOWNLOAD_LAST_BYTES="0"
+	if command -v timeout >/dev/null 2>&1; then
+		timeout_cmd="$(command -v timeout)"
+	fi
 
 	for actual_url in $(get_download_url_candidates_for_mirror "$url" "$mirror" "$custom_mirror_url"); do
 		DOWNLOAD_LAST_URL="$actual_url"
@@ -426,17 +432,31 @@ download_file() {
 				rc=$?
 			;;
 			wget)
-				wget -q --timeout="$transfer_timeout" --tries=1 \
-					--header="User-Agent: luci-app-vnt2web" \
-					--header="Accept: application/vnd.github+json, application/octet-stream, */*" \
-					-O "$out" "$actual_url" >/dev/null 2>&1
+				if [ -n "$timeout_cmd" ]; then
+					"$timeout_cmd" "$transfer_timeout" wget -q --timeout="$transfer_timeout" --tries=1 \
+						--header="User-Agent: luci-app-vnt2web" \
+						--header="Accept: application/vnd.github+json, application/octet-stream, */*" \
+						-O "$out" "$actual_url" >/dev/null 2>&1
+				else
+					wget -q --timeout="$transfer_timeout" --tries=1 \
+						--header="User-Agent: luci-app-vnt2web" \
+						--header="Accept: application/vnd.github+json, application/octet-stream, */*" \
+						-O "$out" "$actual_url" >/dev/null 2>&1
+				fi
 				rc=$?
 			;;
 			uclient-fetch)
-				uclient-fetch -q -T "$transfer_timeout" \
-					--header "User-Agent: luci-app-vnt2web" \
-					--header "Accept: application/vnd.github+json, application/octet-stream, */*" \
-					-O "$out" "$actual_url" >/dev/null 2>&1
+				if [ -n "$timeout_cmd" ]; then
+					"$timeout_cmd" "$transfer_timeout" uclient-fetch -q -T "$transfer_timeout" \
+						--header "User-Agent: luci-app-vnt2web" \
+						--header "Accept: application/vnd.github+json, application/octet-stream, */*" \
+						-O "$out" "$actual_url" >/dev/null 2>&1
+				else
+					uclient-fetch -q -T "$transfer_timeout" \
+						--header "User-Agent: luci-app-vnt2web" \
+						--header "Accept: application/vnd.github+json, application/octet-stream, */*" \
+						-O "$out" "$actual_url" >/dev/null 2>&1
+				fi
 				rc=$?
 			;;
 			*)
@@ -444,7 +464,10 @@ download_file() {
 			;;
 		esac
 
+		DOWNLOAD_LAST_RC="$rc"
 		[ "$rc" -eq 0 ] && return 0
+		DOWNLOAD_LAST_BYTES="$(wc -c <"$out" 2>/dev/null | tr -d '[:space:]')"
+		[ -n "$DOWNLOAD_LAST_BYTES" ] || DOWNLOAD_LAST_BYTES="0"
 		# A failed downloader may leave a partial file behind.
 		rm -f "$out"
 	done
@@ -1370,7 +1393,7 @@ auto_download_bundle_for_mode() {
 	local auto_download download_tag download_repo download_mirror custom_mirror_url cache_mirror_key candidate_mirror api_url arch_name
 	local mirror_attempt mirror_retry_limit
 	local cache_key cache_dir query_dir json_file release_tag asset_url asset_name asset_file extracted_dir
-	local fallback_version fallback_url
+	local fallback_version fallback_url asset_size
 	local web_bin
 	asset_name=""
 
@@ -1485,25 +1508,27 @@ EOF
 			fi
 
 			if [ ! -s "$asset_file" ]; then
+				log_download "asset download started tool=$(get_downloader asset 2>/dev/null || echo unknown) timeout=180s mirror=${candidate_mirror} file=${asset_name}"
 				if ! download_file "$asset_url" "$asset_file" "asset" "$candidate_mirror" "$custom_mirror_url"; then
-					log_download "asset download failed tool=${DOWNLOAD_LAST_TOOL:-unknown} used_url=${DOWNLOAD_LAST_URL:-unknown} mirror=${candidate_mirror} asset_url=${asset_url}"
+					log_download "asset download failed tool=${DOWNLOAD_LAST_TOOL:-unknown} rc=${DOWNLOAD_LAST_RC:-unknown} received=${DOWNLOAD_LAST_BYTES:-0}B mirror=${candidate_mirror} used_url=${DOWNLOAD_LAST_URL:-unknown}"
 					rm -f "$asset_file"
-					continue
+					break
 				fi
 				if ! validate_release_asset "$asset_file"; then
-					log_download "downloaded release asset invalid or corrupted scope=${scope} file=${asset_file}"
+					asset_size="$(file_size "$asset_file" 2>/dev/null || echo 0)"
+					log_download "downloaded release asset invalid or corrupted scope=${scope} file=${asset_file} size=${asset_size}B mirror=${candidate_mirror}"
 					rm -f "$asset_file"
-					continue
+					break
 				fi
 				log_download "asset download ok tool=${DOWNLOAD_LAST_TOOL:-unknown} used_url=${DOWNLOAD_LAST_URL:-unknown} mirror=${candidate_mirror} file=${asset_file}"
 			fi
 
 			write_download_state "$state_file" "extracting" "extracting program files (${candidate_mirror})" "$asset_name" "$release_tag" "$arch_name" ""
 			if ! extract_release_asset "$asset_file" "$extracted_dir"; then
-				log_download "extract failed, remove cache and retry mirror attempt ${candidate_mirror} ${asset_file}"
+				log_download "extract failed, remove cache and switch mirror ${candidate_mirror} ${asset_file}"
 				rm -rf "$extracted_dir"
 				rm -f "$asset_file"
-				continue
+				break
 			fi
 
 			web_bin="$(locate_extracted_bin "$extracted_dir" "vnt2_web")"

@@ -11,10 +11,7 @@ local MAX_UPLOAD_SIZE = 256 * 1024 * 1024
 
 toml.ensure_toml_file(uci)
 
-local m = Map("vnt2", translate("VNT2_WEB"))
-m.description = translate(
-	'VNT2_WEB 是一个简单、高效、可快速组建虚拟局域网的工具。<br>官网：<a href="https://rustvnt.com/" target="_blank">rustvnt.com</a>&nbsp;&nbsp;项目：<a href="https://github.com/vnt-dev/vnt" target="_blank">github.com/vnt-dev/vnt</a>&nbsp;&nbsp;当前 LuCI 插件仅适配 vnt2_web 客户端，适用于 OpenWrt 24.10、25.12，运行时配置文件为 /etc/config/vnt2.toml。'
-)
+local m = Map("vnt2")
 
 m:section(SimpleSection).template = "vnt2/vnt2_status"
 
@@ -924,7 +921,7 @@ end
 
 -- ==================== vnt2_web ====================
 ;(function()
-local w = m:section(TypedSection, "vnt2_web", translate("vnt2_web 客户端状态"))
+local w = m:section(TypedSection, "vnt2_web", translate("vnt2_web 客户端设置"))
 w.anonymous = true
 w.addremove = false
 

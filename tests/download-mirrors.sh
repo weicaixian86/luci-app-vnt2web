@@ -245,9 +245,17 @@ test_download_timeouts_and_archive_checks() {
 	' "$INIT_SCRIPT")"
 	printf '%s\n' "$download_definition" | grep -Fq 'connect_timeout=10' || fail "API connect timeout is not bounded"
 	printf '%s\n' "$download_definition" | grep -Fq 'transfer_timeout=30' || fail "API transfer timeout is not bounded"
-	printf '%s\n' "$download_definition" | grep -Fq 'transfer_timeout=600' || fail "asset transfer timeout changed unexpectedly"
+	printf '%s\n' "$download_definition" | grep -Fq 'transfer_timeout=180' || fail "asset transfer timeout is not bounded to 180 seconds"
+	printf '%s\n' "$download_definition" | grep -Fq 'command -v timeout' || fail "external hard timeout detection is missing"
+	printf '%s\n' "$download_definition" | grep -Fq 'DOWNLOAD_LAST_RC="$rc"' || fail "download exit code diagnostics are missing"
+	printf '%s\n' "$download_definition" | grep -Fq 'DOWNLOAD_LAST_BYTES=' || fail "partial download size diagnostics are missing"
+	grep -Fq 'asset download failed tool=${DOWNLOAD_LAST_TOOL:-unknown} rc=${DOWNLOAD_LAST_RC:-unknown} received=${DOWNLOAD_LAST_BYTES:-0}B' "$INIT_SCRIPT" || \
+		fail "asset download failure log is missing diagnostics"
+	asset_failure_block="$(grep -A 4 'asset download failed tool=' "$INIT_SCRIPT")"
+	printf '%s\n' "$asset_failure_block" | grep -Fq 'rm -f "$asset_file"' || fail "failed asset cleanup is missing"
+	printf '%s\n' "$asset_failure_block" | grep -Fq 'break' || fail "asset failure does not switch to the next mirror immediately"
 	grep -Fq 'archive_is_safe "$asset_file" || return 1' "$INIT_SCRIPT" || fail "release extraction bypasses archive safety checks"
-	printf 'PASS: API timeouts and release archive checks are enabled\n'
+	printf 'PASS: download deadlines, diagnostics, and release archive checks are enabled\n'
 }
 
 test_archive_safety() {
