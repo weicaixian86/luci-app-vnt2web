@@ -17,7 +17,7 @@ function index()
 
 	toml.ensure_toml_file(uci)
 
-	entry({ "admin", "vpn", "vnt2" }, alias("admin", "vpn", "vnt2", "config"), _("VNT2"), 45).dependent = true
+	entry({ "admin", "vpn", "vnt2" }, alias("admin", "vpn", "vnt2", "config"), _("VNT2_WEB"), 45).dependent = true
 	entry({ "admin", "vpn", "vnt2", "config" }, cbi("vnt2"), _("基本设置"), 10).leaf = true
 	entry({ "admin", "vpn", "vnt2", "runtime_log" }, cbi("vnt2_runtime_log"), _("运行日志"), 30).leaf = true
 
@@ -76,7 +76,7 @@ end
 
 local function get_web_token()
 	local token = trim(uci_first("vnt2_web", "web_token", ""))
-	if #token < 16 or token:find("[^%w%._~-]", 1) then
+	if #token ~= 6 or token:find("[^%w%._~-]", 1) then
 		return ""
 	end
 	return token

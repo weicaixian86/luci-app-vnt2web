@@ -11,20 +11,22 @@ function vnt2GenerateWebToken(id) {
 		return;
 	}
 
-	var bytes = new Uint8Array(24);
+	var alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+	var token = "";
+	var bytes = new Uint8Array(6);
 	if (window.crypto && window.crypto.getRandomValues) {
 		window.crypto.getRandomValues(bytes);
-	} else {
 		for (var i = 0; i < bytes.length; i++) {
-			bytes[i] = Math.floor(Math.random() * 256);
+			token += alphabet.charAt(bytes[i] % alphabet.length);
+		}
+	} else {
+		for (var j = 0; j < 6; j++) {
+			token += alphabet.charAt(Math.floor(Math.random() * alphabet.length));
 		}
 	}
 
-	var token = "";
-	for (var i = 0; i < bytes.length; i++) {
-		token += ("0" + bytes[i].toString(16)).slice(-2);
-	}
 	field.value = token;
+	field.type = "text";
 	field.dispatchEvent(new Event("change", { bubbles: true }));
 }
 //]]>

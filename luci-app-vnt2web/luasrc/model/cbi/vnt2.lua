@@ -11,9 +11,9 @@ local MAX_UPLOAD_SIZE = 256 * 1024 * 1024
 
 toml.ensure_toml_file(uci)
 
-local m = Map("vnt2", translate("VNT2"))
+local m = Map("vnt2", translate("VNT2_WEB"))
 m.description = translate(
-	'VNT2 是一个简单、高效、可快速组建虚拟局域网的工具。<br>官网：<a href="https://rustvnt.com/" target="_blank">rustvnt.com</a>&nbsp;&nbsp;项目：<a href="https://github.com/vnt-dev/vnt" target="_blank">github.com/vnt-dev/vnt</a>&nbsp;&nbsp;当前 LuCI 插件仅适配 vnt2_web 客户端，适用于 OpenWrt 24.10、25.12，运行时配置文件为 /etc/config/vnt2.toml。'
+	'VNT2_WEB 是一个简单、高效、可快速组建虚拟局域网的工具。<br>官网：<a href="https://rustvnt.com/" target="_blank">rustvnt.com</a>&nbsp;&nbsp;项目：<a href="https://github.com/vnt-dev/vnt" target="_blank">github.com/vnt-dev/vnt</a>&nbsp;&nbsp;当前 LuCI 插件仅适配 vnt2_web 客户端，适用于 OpenWrt 24.10、25.12，运行时配置文件为 /etc/config/vnt2.toml。'
 )
 
 m:section(SimpleSection).template = "vnt2/vnt2_status"
@@ -165,13 +165,17 @@ local function generate_web_token()
 	local fd = nixio.open("/dev/urandom", "r")
 	local bytes
 	if fd then
-		bytes = fd:read(24)
+		bytes = fd:read(6)
 		fd:close()
 	end
-	if type(bytes) == "string" and #bytes == 24 then
-		return (bytes:gsub(".", function(c)
-			return string.format("%02x", string.byte(c))
-		end))
+	if type(bytes) == "string" and #bytes == 6 then
+		local alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+		local token = ""
+		for i = 1, #bytes do
+			local index = (string.byte(bytes, i) % #alphabet) + 1
+			token = token .. alphabet:sub(index, index)
+		end
+		return token
 	end
 
 	local seed = table.concat({
@@ -184,7 +188,7 @@ local function generate_web_token()
 	for i = 1, #seed do
 		value = value .. string.format("%02x", string.byte(seed, i) or 0)
 	end
-	return value:sub(1, 48)
+	return value:sub(1, 6)
 end
 
 local function normalized_list_values(value)
@@ -906,7 +910,6 @@ end
 local function bind_custom_download_mirror(option, mirror_option)
 	option:depends(mirror_option, "custom")
 	option.placeholder = "https://gh-proxy.com/"
-	option.description = translate("请输入镜像前缀，例如 https://gh-proxy.com/；下载时会将 GitHub 原始 URL 拼接到此前缀后，失败后回退 GitHub 原地址")
 	option.validate = function(self, value)
 		value = trim(value)
 		if value == "" then
@@ -935,20 +938,17 @@ web_enabled.write = function(self, section, value)
 	self.map.uci:set(self.map.config, section, self.option, value)
 end
 
-local web_conf_path = w:taboption("general", DummyValue, "_web_conf_path", translate("配置文件路径"),
-	translate("运行时配置文件位置固定为 /etc/config/vnt2.toml，不允许在页面中修改"))
+local web_conf_path = w:taboption("general", DummyValue, "_web_conf_path", translate("配置文件路径"))
 web_conf_path.cfgvalue = function()
 	return "/etc/config/vnt2.toml"
 end
 
-local download_mirror_web = w:taboption("general", ListValue, "download_mirror", translate("Web 下载镜像源"),
-	translate("自动依次尝试 gh-proxy、GitHub、Gitee、GitLab、Cloudflare R2，每个源最多重试 3 次；latest 只从 GitHub 官方接口解析稳定版，Gitee、GitLab、Cloudflare R2 仅用于下载指定版本"))
+local download_mirror_web = w:taboption("general", ListValue, "download_mirror", translate("Web 下载镜像源"))
 bind_download_mirror(download_mirror_web)
 local custom_download_mirror_web = w:taboption("general", Value, "custom_download_mirror", translate("Web 自定义镜像地址"))
 bind_custom_download_mirror(custom_download_mirror_web, "download_mirror")
 
-local vnt2_web_bin = w:taboption("general", Value, "vnt2_web_bin", translate("vnt2_web 程序路径"),
-	translate("默认 /usr/bin/vnt2_web；若不存在，将优先尝试自动下载，失败后回退到已上传并安装到 /usr/bin 的程序"))
+local vnt2_web_bin = w:taboption("general", Value, "vnt2_web_bin", translate("vnt2_web 程序路径"))
 vnt2_web_bin.placeholder = "/usr/bin/vnt2_web"
 vnt2_web_bin.validate = validate_nonempty
 
@@ -956,25 +956,24 @@ local web_port = w:taboption("general", Value, "web_port", translate("监听端�
 web_port.placeholder = "19099"
 web_port.datatype = "port"
 
-local log_level = w:taboption("general", ListValue, "log_level", translate("日志级别"),
-	translate("通过环境变量 RUST_LOG 注入给 vnt2_web"))
+local log_level = w:taboption("general", ListValue, "log_level", translate("日志级别"))
+log_level.description = nil
 for _, lv in ipairs({ "error", "warn", "info", "debug", "trace" }) do
 	log_level:value(lv, lv)
 end
 log_level.default = "info"
 
-local web_token = w:taboption("general", Value, "web_token", translate("访问 Token"),
-	translate("Web API 访问令牌，至少 16 个字符；可直接输入，或点击右侧星号生成随机令牌"))
+local web_token = w:taboption("general", Value, "web_token", translate("访问 Token"))
 web_token.password = true
-web_token.placeholder = translate("点击星号生成随机令牌")
+web_token.placeholder = translate("6 位随机令牌")
 web_token.template = "vnt2/web_token"
 web_token.validate = function(self, value)
 	value = trim(value)
 	if value == "" then
 		return nil, translate("访问 Token 不能为空，请点击星号生成或手动输入")
 	end
-	if #value < 16 then
-		return nil, translate("访问 Token 至少需要 16 个字符")
+	if #value ~= 6 then
+		return nil, translate("访问 Token 必须为 6 个字符")
 	end
 	if value:find("[^%w%._~-]", 1) then
 		return nil, translate("访问 Token 只能包含字母、数字、点、下划线、波浪线和连字符")
@@ -996,7 +995,6 @@ local web_upload = w:taboption("upload", FileUpload, "upload_web")
 web_upload.optional = true
 web_upload.default = ""
 web_upload.template = "vnt2/other_upload"
-web_upload.description = translate("支持上传 vnt2_web 二进制文件或包含 vnt2_web 的 .tar.gz 压缩包；文件会先暂存，再由后台上传 worker 校验并安装到 /usr/bin/；当自动下载失败时，系统会回退使用已经安装的有效程序。")
 
 local web_upload_note = w:taboption("upload", DummyValue, "_upload_note_web")
 web_upload_note.rawhtml = true

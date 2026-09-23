@@ -1904,13 +1904,13 @@ generate_web_token() {
 	local token=""
 
 	if command -v openssl >/dev/null 2>&1; then
-		token="$(openssl rand -hex 24 2>/dev/null)"
+		token="$(openssl rand -hex 3 2>/dev/null)"
 	fi
 	if [ -z "$token" ] && command -v hexdump >/dev/null 2>&1; then
-		token="$(dd if=/dev/urandom bs=24 count=1 2>/dev/null | hexdump -v -e '24/1 "%02x"')"
+		token="$(dd if=/dev/urandom bs=3 count=1 2>/dev/null | hexdump -v -e '3/1 "%02x"')"
 	fi
 	if [ -z "$token" ] && command -v od >/dev/null 2>&1; then
-		token="$(dd if=/dev/urandom bs=24 count=1 2>/dev/null | od -An -tx1 | tr -d '[:space:]')"
+		token="$(dd if=/dev/urandom bs=3 count=1 2>/dev/null | od -An -tx1 | tr -d '[:space:]')"
 	fi
 
 	case "$token" in
@@ -1918,7 +1918,7 @@ generate_web_token() {
 			return 1
 			;;
 	esac
-	[ "${#token}" -ge 32 ] || return 1
+	[ "${#token}" -eq 6 ] || return 1
 
 	printf '%s\n' "$token"
 	return 0
@@ -1935,7 +1935,7 @@ ensure_web_token() {
 				return 1
 				;;
 		esac
-		[ "${#token}" -ge 16 ] || return 1
+		[ "${#token}" -eq 6 ] || return 1
 		printf '%s\n' "$token"
 		return 0
 	fi
@@ -1978,7 +1978,7 @@ start_web_instance() {
 	config_get log_level "$cfg" "log_level" "info"
 	web_addr="$(format_socket_addr "$web_host" "$web_port")"
 	web_token="$(ensure_web_token "$cfg" "$web_token")" || {
-		log_web 'invalid web access token, expected at least 16 URL-safe characters'
+		log_web 'invalid web access token, expected exactly 6 URL-safe characters'
 		return 1
 	}
 

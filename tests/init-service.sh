@@ -110,7 +110,8 @@ test_web_token_support() {
 	grep -Fq 'procd_set_param command /bin/sh -c "exec \"${web_bin}\" --addr \"${web_addr}\" --conf \"${WEB_CONF_FILE}\" --token \"${web_token}\"' \
 		"$INIT_SCRIPT" || fail "init does not pass the token to vnt2_web"
 	grep -Fq '*[!0-9A-Za-z._~-]*' "$INIT_SCRIPT" || fail "init does not reject non URL-safe token characters"
-	grep -Fq '${#token}" -ge 16' "$INIT_SCRIPT" || fail "init does not enforce the minimum token length"
+	grep -Fq '${#token}" -eq 6' "$INIT_SCRIPT" || fail "init does not enforce a 6-character token"
+	grep -Fq 'field.type = "text";' "$TOKEN_VIEW" || fail "generated token is not shown after refresh"
 
 	grep -Fq 'local function get_web_token()' "$CONTROLLER" || fail "controller does not read the web token"
 	grep -Fq '"?token=" .. url_encode(token)' "$CONTROLLER" || fail "status URL does not carry the encoded token"
