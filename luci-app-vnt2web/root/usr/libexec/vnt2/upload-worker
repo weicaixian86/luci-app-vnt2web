@@ -63,12 +63,15 @@ clear_version_state() {
 
 is_elf_binary() {
 	local bin="$1"
-	local magic
+	local magic expected
 
 	[ -s "$bin" ] || return 1
 	[ ! -L "$bin" ] || return 1
-	magic="$(od -An -tx1 -N4 "$bin" 2>/dev/null | tr -d '[:space:]')"
-	[ "$magic" = "7f454c46" ]
+	# BusyBox od lacks the GNU -A/-t/-N options, so read the four ELF magic
+	# bytes with dd instead of depending on a GNU coreutils od.
+	magic="$(dd if="$bin" bs=1 count=4 2>/dev/null)"
+	expected="$(printf '\177ELF')"
+	[ "$magic" = "$expected" ]
 }
 
 detect_arch_name() {

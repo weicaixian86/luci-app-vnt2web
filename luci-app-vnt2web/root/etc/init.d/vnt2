@@ -111,21 +111,6 @@ host_allows_external_access() {
 	return 0
 }
 
-extract_bind_host() {
-	local bind host
-	bind="$(trim_value "$1")"
-	host="${bind%:*}"
-	host="${host#\[}"
-	host="${host%\]}"
-	echo "$host"
-}
-
-bind_allows_external_access() {
-	local bind_host
-	bind_host="$(extract_bind_host "$1")"
-	host_allows_external_access "$bind_host"
-}
-
 format_socket_addr() {
 	local host="$1"
 	local port="$2"
@@ -272,11 +257,15 @@ ensure_exec() {
 
 is_elf_binary() {
 	local bin="$1"
-	local magic
+	local magic expected
 
 	[ -s "$bin" ] || return 1
-	magic="$(od -An -tx1 -N4 "$bin" 2>/dev/null | tr -d '[:space:]')"
-	[ "$magic" = "7f454c46" ]
+	# BusyBox od does not support the GNU -A/-t/-N options used previously,
+	# which made every real binary look invalid on stock OpenWrt. Read the
+	# four magic bytes with dd and compare against the literal ELF signature.
+	magic="$(dd if="$bin" bs=1 count=4 2>/dev/null)"
+	expected="$(printf '\177ELF')"
+	[ "$magic" = "$expected" ]
 }
 
 ensure_elf_exec() {
@@ -363,35 +352,6 @@ detect_arch_name() {
 		;;
 		*)
 			echo "${mach:-unknown}"
-		;;
-	esac
-}
-
-detect_arch_patterns() {
-	case "$1" in
-		x86_64)
-			echo "x86_64 amd64 x86-64"
-		;;
-		aarch64)
-			echo "aarch64 arm64 armv8"
-		;;
-		arm)
-			echo "armv7 armhf armv6 arm"
-		;;
-		mips64el)
-			echo "mips64el mips64"
-		;;
-		mipsel)
-			echo "mipsel mipsel_24kc mipsel24kc"
-		;;
-		mips)
-			echo "mips mips_24kc mips24kc"
-		;;
-		x86)
-			echo "x86 i386 i686"
-		;;
-		*)
-			echo "$1"
 		;;
 	esac
 }
@@ -517,22 +477,6 @@ is_github_download_url() {
 	esac
 }
 
-get_download_url_candidates() {
-	local url="$1"
-	local raw_url
-
-	url="$(trim_value "$url")"
-	raw_url="$(strip_github_proxy_url "$url")"
-	[ -n "$raw_url" ] || return 0
-
-	if is_github_download_url "$raw_url"; then
-		printf '%s\n' "${GH_PROXY_PREFIX}${raw_url}"
-		printf '%s\n' "$raw_url"
-	else
-		printf '%s\n' "$raw_url"
-	fi
-}
-
 get_download_url_candidates_for_mirror() {
 	local url="$1"
 	local mirror="$2"
@@ -600,6 +544,40 @@ resolve_v2_release_tag() {
 			else
 				echo "$tag"
 			fi
+		;;
+	esac
+}
+
+normalize_release_query_mode() {
+	local mode="$1"
+	local tag="$2"
+
+	mode="$(trim_value "$mode")"
+	case "$mode" in
+		newest|stable|fixed)
+			echo "$mode"
+			return 0
+		;;
+	esac
+
+	case "$tag" in
+		''|latest) echo "newest" ;;
+		*) echo "fixed" ;;
+	esac
+}
+
+get_release_query_modes() {
+	local tag="$1"
+
+	tag="$(trim_value "$tag")"
+	case "$tag" in
+		''|latest)
+			# Try the true newest release first, including pre-releases, and
+			# only fall back to GitHub's stable `latest` afterwards.
+			printf '%s\n' "newest" "stable"
+		;;
+		*)
+			printf '%s\n' "fixed"
 		;;
 	esac
 }
@@ -814,39 +792,11 @@ refresh_latest_versions() {
 	return "$rc"
 }
 
-get_release_list_url() {
-	local repo="$1"
-	local mirror="$2"
-	local effective_mirror
-
-	[ -n "$repo" ] || repo="vnt-dev/vnt"
-	effective_mirror="$(select_download_mirror "$repo" "$mirror")"
-
-	# The selected mirror determines the release endpoint and transport.
-	echo "https://api.github.com/repos/${repo}/releases"
-}
-
-get_release_api_url() {
-	local repo="$1"
-	local tag="$2"
-	local mirror="$3"
-	local resolved_tag
-
-	[ -n "$repo" ] || repo="vnt-dev/vnt"
-	resolved_tag="$(resolve_v2_release_tag "$repo" "$tag")"
-
-	if [ -z "$resolved_tag" ] || [ "$resolved_tag" = "latest" ]; then
-		echo "https://api.github.com/repos/${repo}/releases"
-		echo "https://api.github.com/repos/${repo}/releases/latest"
-	else
-		echo "https://api.github.com/repos/${repo}/releases/tags/${resolved_tag}"
-	fi
-}
-
 get_release_api_candidates() {
 	local repo="$1"
 	local tag="$2"
 	local mirror="$3"
+	local mode="${4:-}"
 	local resolved_tag normalized_tag effective_mirror project
 
 	[ -n "$repo" ] || repo="vnt-dev/vnt"
@@ -854,10 +804,27 @@ get_release_api_candidates() {
 	normalized_tag="$(normalize_release_tag "$resolved_tag")"
 	effective_mirror="$(select_download_mirror "$repo" "$mirror")"
 
+	if [ -z "$resolved_tag" ] || [ "$resolved_tag" = "latest" ]; then
+		case "$mode" in
+			stable)
+				case "$effective_mirror" in
+					github|gh-proxy|custom)
+						# Second tier: the official stable `latest` release,
+						# which by definition excludes pre-releases.
+						echo "https://api.github.com/repos/${repo}/releases/latest"
+						return 0
+					;;
+				esac
+			;;
+		esac
+	fi
+
 	case "$effective_mirror" in
 		gitee|gitlab|cloudflare)
 			project="$(repo_to_mirror_project "$repo")" || effective_mirror="github"
 			if [ "$effective_mirror" != "github" ]; then
+				# These mirrors have no stable-only endpoint, so the caller
+				# filters the release list instead.
 				case "$effective_mirror" in
 					gitee)
 						echo "https://gitee.com/api/v5/repos/whzhni/${project}/releases"
@@ -875,8 +842,11 @@ get_release_api_candidates() {
 	esac
 
 	if [ -z "$resolved_tag" ] || [ "$resolved_tag" = "latest" ]; then
+		# GitHub's /releases/latest endpoint hides pre-releases, so a newer
+		# pre-release would be silently replaced by an older stable tag.
+		# Always resolve `latest` from the full list, which is ordered by
+		# creation time and includes pre-releases.
 		echo "https://api.github.com/repos/${repo}/releases"
-		echo "https://api.github.com/repos/${repo}/releases/latest"
 		return 0
 	fi
 
@@ -948,6 +918,80 @@ BEGIN {
 			if (depth == 0) {
 				print out
 				exit
+			}
+		}
+	}
+}
+' "$src" >"$dst"
+
+	[ -s "$dst" ]
+}
+
+extract_first_stable_release_object() {
+	local src="$1"
+	local dst="$2"
+
+	# Walks the release array and emits the first object that is neither a
+	# draft nor a pre-release. Mirrors that do not expose `prerelease` are
+	# treated as stable, so this degrades to the previous first-object
+	# behaviour instead of failing.
+	awk '
+BEGIN {
+	in_array = 0
+	depth = 0
+	started = 0
+	in_string = 0
+	escaped = 0
+	out = ""
+}
+{
+	line = $0
+	if (!in_array) {
+		pos = index(line, "[")
+		if (pos > 0) {
+			in_array = 1
+			line = substr(line, pos + 1)
+		} else {
+			next
+		}
+	}
+	for (i = 1; i <= length(line); i++) {
+		c = substr(line, i, 1)
+		if (!started) {
+			if (c == "{") {
+				started = 1
+				depth = 1
+				out = "{"
+			}
+			continue
+		}
+		out = out c
+		if (in_string) {
+			if (escaped) {
+				escaped = 0
+			} else if (c == "\\") {
+				escaped = 1
+			} else if (c == "\"") {
+				in_string = 0
+			}
+			continue
+		}
+		if (c == "\"") {
+			in_string = 1
+		} else if (c == "{") {
+			depth++
+		} else if (c == "}") {
+			depth--
+			if (depth == 0) {
+				if (out !~ /"prerelease"[[:space:]]*:[[:space:]]*true/ &&
+					out !~ /"draft"[[:space:]]*:[[:space:]]*true/) {
+					print out
+					exit
+				}
+				started = 0
+				in_string = 0
+				escaped = 0
+				out = ""
 			}
 		}
 	}
@@ -1039,12 +1083,14 @@ fetch_release_metadata_from_mirror() {
 	local json_file="$3"
 	local mirror="$4"
 	local custom_mirror_url="$5"
+	local query_mode="${6:-}"
 	local api_url response_tag candidate requested_tag effective_mirror first_file tagged_file json_root
 
 	effective_mirror="$(select_download_mirror "$repo" "$mirror")"
 	requested_tag="$(normalize_release_tag "$tag")"
+	query_mode="$(normalize_release_query_mode "$query_mode" "$tag")"
 
-	for candidate in $(get_release_api_candidates "$repo" "$tag" "$effective_mirror"); do
+	for candidate in $(get_release_api_candidates "$repo" "$tag" "$effective_mirror" "$query_mode"); do
 		log_download "checking release endpoint: ${candidate}"
 		if download_file "$candidate" "$json_file" "api" "$effective_mirror" "$custom_mirror_url"; then
 			response_tag="$(sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$json_file" | head -n1)"
@@ -1062,7 +1108,14 @@ fetch_release_metadata_from_mirror() {
 							fi
 						elif [ "$json_root" = "[" ]; then
 							first_file="${json_file}.first"
-							if extract_first_release_object "$json_file" "$first_file"; then
+							if [ "$query_mode" = "stable" ]; then
+								if extract_first_stable_release_object "$json_file" "$first_file"; then
+									mv -f "$first_file" "$json_file"
+								else
+									rm -f "$first_file"
+									continue
+								fi
+							elif extract_first_release_object "$json_file" "$first_file"; then
 								mv -f "$first_file" "$json_file"
 							fi
 						fi
@@ -1458,10 +1511,11 @@ cache_bundle_ready() {
 	esac
 }
 
-auto_download_bundle() {
+auto_download_bundle_for_mode() {
 	local cfg="$1"
 	local scope="$2"
 	local state_file="$3"
+	local query_mode="$4"
 
 	local auto_download download_tag download_repo download_mirror custom_mirror_url cache_mirror_key candidate_mirror api_url arch_name
 	local mirror_attempt mirror_retry_limit latest_cache_scope
@@ -1469,6 +1523,8 @@ auto_download_bundle() {
 	local fallback_version fallback_url
 	local web_bin
 	asset_name=""
+
+	[ -n "$query_mode" ] || query_mode="fixed"
 
 	config_get_bool auto_download "$cfg" "auto_download" "1"
 	[ "$auto_download" = "1" ] || {
@@ -1498,22 +1554,28 @@ auto_download_bundle() {
 	[ -n "$download_tag" ] || download_tag="latest"
 
 	arch_name="$(detect_arch_name)"
-	query_dir="${DOWNLOAD_CACHE_BASE}/query_$(sanitize_name "${cache_mirror_key}_${download_repo}_${download_tag}_${arch_name}_${scope}")"
+	query_dir="${DOWNLOAD_CACHE_BASE}/query_$(sanitize_name "${cache_mirror_key}_${download_repo}_${download_tag}_${query_mode}_${arch_name}_${scope}")"
 	json_file="${query_dir}/release.json"
 	mkdir -p "$query_dir"
 
-	log_download "query target release repo=${download_repo} tag=${download_tag} arch=${arch_name} scope=${scope}"
+	log_download "query target release repo=${download_repo} tag=${download_tag} mode=${query_mode} arch=${arch_name} scope=${scope}"
 	for candidate_mirror in $(get_download_mirror_candidates "$download_repo" "$download_mirror"); do
 		mirror_retry_limit="$DOWNLOAD_MIRROR_RETRIES"
 		[ "$candidate_mirror" = "custom" ] && mirror_retry_limit=1
 		for mirror_attempt in $(seq 1 "$mirror_retry_limit"); do
 			log_download "mirror attempt ${mirror_attempt}/${mirror_retry_limit} mirror=${candidate_mirror} scope=${scope}"
 			write_download_state "$state_file" "querying" "querying releases (${candidate_mirror})" "" "$download_tag" "$arch_name" ""
-			log_download "querying ${scope} release repo=${download_repo} tag=${download_tag} mirror=${candidate_mirror} strategy=${download_mirror} arch=${arch_name}"
-			api_url="$(fetch_release_metadata_from_mirror "$download_repo" "$download_tag" "$json_file" "$candidate_mirror" "$custom_mirror_url")"
+			log_download "querying ${scope} release repo=${download_repo} tag=${download_tag} mode=${query_mode} mirror=${candidate_mirror} strategy=${download_mirror} arch=${arch_name}"
+			api_url="$(fetch_release_metadata_from_mirror "$download_repo" "$download_tag" "$json_file" "$candidate_mirror" "$custom_mirror_url" "$query_mode")"
 			if [ -z "$api_url" ]; then
-				log_download "release query failed repo=${download_repo} tag=${download_tag} mirror=${candidate_mirror}"
+				log_download "release query failed repo=${download_repo} tag=${download_tag} mode=${query_mode} mirror=${candidate_mirror}"
 				if [ "$candidate_mirror" != "github" ]; then
+					continue
+				fi
+				# The built-in fallback points at the newest known version, so
+				# it must not be reused for the stable tier: that tier exists
+				# precisely to obtain an older release.
+				if [ "$query_mode" = "stable" ]; then
 					continue
 				fi
 				fallback_version="$(normalize_release_tag "$download_tag")"
@@ -1540,7 +1602,7 @@ EOF
 				continue
 			}
 			latest_cache_scope=""
-			if [ "$download_tag" = "latest" ]; then
+			if [ "$query_mode" = "newest" ]; then
 				case "$api_url" in
 					fallback:*) ;;
 					*) latest_cache_scope="latest" ;;
@@ -1608,8 +1670,13 @@ EOF
 			fi
 
 			web_bin="$(locate_extracted_bin "$extracted_dir" "vnt2_web")"
-			if ! ensure_elf_exec "$web_bin"; then
+			if [ -z "$web_bin" ] || [ ! -f "$web_bin" ]; then
 				log_download "bundle missing vnt2_web mirror=${candidate_mirror}"
+				rm -rf "$extracted_dir"
+				continue
+			fi
+			if ! ensure_elf_exec "$web_bin"; then
+				log_download "bundle vnt2_web is not a valid ELF mirror=${candidate_mirror}"
 				rm -rf "$extracted_dir"
 				continue
 			fi
@@ -1630,7 +1697,39 @@ EOF
 
 	write_download_state "$state_file" "failed" "all download mirrors failed" "${asset_name:-unknown}" "$download_tag" "$arch_name" ""
 	clear_version_state
-	log_download "all download mirrors failed repo=${download_repo} tag=${download_tag} strategy=${download_mirror} arch=${arch_name} scope=${scope}"
+	log_download "all download mirrors failed repo=${download_repo} tag=${download_tag} mode=${query_mode} strategy=${download_mirror} arch=${arch_name} scope=${scope}"
+	return 1
+}
+
+auto_download_bundle() {
+	local cfg="$1"
+	local scope="$2"
+	local state_file="$3"
+	local download_tag query_mode
+	local auto_download
+
+	config_get_bool auto_download "$cfg" "auto_download" "1"
+	[ "$auto_download" = "1" ] || {
+		write_download_state "$state_file" "disabled" "auto download disabled" "" "" "" ""
+		clear_version_state
+		return 1
+	}
+
+	config_get download_tag "$cfg" "download_tag" "latest"
+	[ -n "$download_tag" ] || download_tag="latest"
+
+	# A fixed tag is honoured as-is. For `latest` the newest release is tried
+	# first, including pre-releases, and GitHub's stable latest is used only
+	# after that attempt fails.
+	for query_mode in $(get_release_query_modes "$download_tag"); do
+		if [ "$query_mode" = "stable" ]; then
+			log_download "falling back to the stable latest release scope=${scope}"
+		fi
+		if auto_download_bundle_for_mode "$cfg" "$scope" "$state_file" "$query_mode"; then
+			return 0
+		fi
+	done
+
 	return 1
 }
 
@@ -1712,69 +1811,6 @@ toml_get_bool() {
 	local key="$2"
 	local raw
 	raw="$(trim_value "$(toml_get_raw "$file" "$key" 2>/dev/null)")"
-	[ "$raw" = "true" ] && echo "1" || echo "0"
-}
-
-toml_get_section_raw() {
-	local file="$1"
-	local section="$2"
-	local key="$3"
-	[ -f "$file" ] || return 1
-	awk -v wanted_section="$section" -v wanted_key="$key" '
-	function trim(s) {
-		sub(/^[[:space:]]+/, "", s)
-		sub(/[[:space:]]+$/, "", s)
-		return s
-	}
-	{
-		line=$0
-		sub(/\r$/, "", line)
-		if (line ~ /^[[:space:]]*\[/) {
-			section=line
-			sub(/^[[:space:]]*\[/, "", section)
-			sub(/\][[:space:]]*$/, "", section)
-			in_section=(trim(section) == wanted_section)
-			next
-		}
-		if (in_section) {
-			candidate=line
-			sub(/^[[:space:]]*/, "", candidate)
-			if (candidate ~ ("^" wanted_key "[[:space:]]*=")) {
-				sub("^[^=]*=[[:space:]]*", "", candidate)
-				sub(/[[:space:]]*$/, "", candidate)
-				print candidate
-				exit
-			}
-		}
-	}
-	' "$file"
-}
-
-toml_get_section_string() {
-	local file="$1"
-	local section="$2"
-	local key="$3"
-	local raw val
-
-	raw="$(trim_value "$(toml_get_section_raw "$file" "$section" "$key" 2>/dev/null)")"
-	case "$raw" in
-		\"*\")
-			val="${raw#\"}"
-			val="${val%\"}"
-			printf '%s\n' "$val" | sed 's/\\"/"/g; s/\\\\/\\/g'
-		;;
-		*)
-			printf '%s\n' "$raw"
-		;;
-	esac
-}
-
-toml_get_section_bool() {
-	local file="$1"
-	local section="$2"
-	local key="$3"
-	local raw
-	raw="$(trim_value "$(toml_get_section_raw "$file" "$section" "$key" 2>/dev/null)")"
 	[ "$raw" = "true" ] && echo "1" || echo "0"
 }
 

@@ -60,27 +60,6 @@ local function uci_first(stype, opt, default)
 	return v
 end
 
-local function uci_list(stype, opt)
-	local values = {}
-	uci:foreach("vnt2", stype, function(s)
-		local v = s[opt]
-		if type(v) == "table" then
-			for _, item in ipairs(v) do
-				item = trim(item)
-				if item ~= "" then
-					values[#values + 1] = item
-				end
-			end
-		elseif type(v) == "string" then
-			v = trim(v)
-			if v ~= "" then
-				values[#values + 1] = v
-			end
-		end
-	end)
-	return values
-end
-
 local function file_exists(path)
 	return path and path ~= "" and fs.access(path)
 end

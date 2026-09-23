@@ -50,6 +50,7 @@ local log_message_exact_map = {
 	["service stop flow begin"] = "服务停止流程开始",
 	["service stopped"] = "服务已停止",
 	["bundle missing vnt2_web"] = "压缩包中缺少 vnt2_web",
+	["bundle vnt2_web is not a valid ELF"] = "压缩包中的 vnt2_web 不是有效的 ELF 程序",
 	["install web bundle to /usr/bin failed"] = "安装 Web 程序包到 /usr/bin 失败"
 }
 
@@ -66,9 +67,13 @@ local log_message_pattern_rules = {
 	{ "^mirror (.+) not supported for repo (.+), fallback to (.+)$", "镜像 %1 不支持仓库 %2，已回退到 %3" },
 	{ "^mirror strategy (.+) not supported for repo (.+), fallback to github$", "镜像策略 %1 不支持仓库 %2，已回退到 GitHub" },
 	{ "^cached bundle found for (.+), reuse (.+)$", "发现 %1 的缓存程序包，复用目录：%2" },
+	{ "^query target release repo=(.+) tag=(.+) mode=(.+) arch=(.+) scope=(.+)$", "准备查询发行版：repo=%1 tag=%2 mode=%3 arch=%4 scope=%5" },
 	{ "^query target release repo=(.+) tag=(.+) arch=(.+) scope=(.+)$", "准备查询发行版：repo=%1 tag=%2 arch=%3 scope=%4" },
+	{ "^querying (.+) release repo=(.+) tag=(.+) mode=(.+) mirror=(.+) strategy=(.+) arch=(.+)$", "正在查询 %1 发行版：repo=%2 tag=%3 mode=%4 mirror=%5 strategy=%6 arch=%7" },
 	{ "^querying (.+) release repo=(.+) tag=(.+) mirror=(.+) strategy=(.+) arch=(.+)$", "正在查询 %1 发行版：repo=%2 tag=%3 mirror=%4 strategy=%5 arch=%6" },
+	{ "^querying (.+) release repo=(.+) tag=(.+) mode=(.+) mirror=(.+) arch=(.+)$", "正在查询 %1 发行版：repo=%2 tag=%3 mode=%4 mirror=%5 arch=%6" },
 	{ "^querying (.+) release repo=(.+) tag=(.+) mirror=(.+) arch=(.+)$", "正在查询 %1 发行版：repo=%2 tag=%3 mirror=%4 arch=%5" },
+	{ "^release query failed repo=(.+) tag=(.+) mode=(.+) mirror=(.+)$", "发行版查询失败：repo=%1 tag=%2 mode=%3 mirror=%4" },
 	{ "^release query failed repo=(.+) tag=(.+) mirror=(.+)$", "发行版查询失败：repo=%1 tag=%2 mirror=%3" },
 	{ "^release query ok: (.+)$", "发行版查询成功：%1" },
 	{ "^no release asset matched arch=(.+) scope=(.+) mirror=(.+)$", "未找到匹配的发行资源：arch=%1 scope=%2 mirror=%3" },
@@ -86,9 +91,12 @@ local log_message_pattern_rules = {
 	{ "^retried asset still invalid (.+)$", "重试后资源仍然无效：%1" },
 	{ "^extract asset failed (.+)$", "解压资源失败：%1" },
 	{ "^bundle missing vnt2_web mirror=(.+)$", "压缩包中缺少 vnt2_web：mirror=%1" },
+	{ "^bundle vnt2_web is not a valid ELF mirror=(.+)$", "压缩包中的 vnt2_web 不是有效的 ELF 程序：mirror=%1" },
 	{ "^web installed: web=(.+) mirror=(.+)$", "Web 安装完成：web=%1 mirror=%2" },
 	{ "^web installed: web=(.+)$", "Web 安装完成：web=%1" },
+	{ "^all download mirrors failed repo=(.+) tag=(.+) mode=(.+) strategy=(.+) arch=(.+) scope=(.+)$", "所有下载镜像均失败：repo=%1 tag=%2 mode=%3 strategy=%4 arch=%5 scope=%6" },
 	{ "^all download mirrors failed repo=(.+) tag=(.+) strategy=(.+) arch=(.+) scope=(.+)$", "所有下载镜像均失败：repo=%1 tag=%2 strategy=%3 arch=%4 scope=%5" },
+	{ "^falling back to the stable latest release scope=(.+)$", "正在回退到稳定版最新发行版：scope=%1" },
 	{ "^(.+) auto download failed, fallback to uploaded binary (.+)$", "%1 自动下载失败，已回退到已上传程序：%2" }
 }
 

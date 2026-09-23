@@ -4,6 +4,7 @@ set -eu
 
 ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 INIT_SCRIPT="${ROOT_DIR}/luci-app-vnt2web/root/etc/init.d/vnt2"
+UPLOAD_WORKER_SCRIPT="${ROOT_DIR}/luci-app-vnt2web/root/usr/libexec/vnt2/upload-worker"
 CBI_SCRIPT="${ROOT_DIR}/luci-app-vnt2web/luasrc/model/cbi/vnt2.lua"
 DEFAULT_CONFIG="${ROOT_DIR}/luci-app-vnt2web/root/etc/config/vnt2"
 
@@ -120,6 +121,130 @@ EOF
 	printf 'PASS: release list tag matching normalizes only the v prefix\n'
 }
 
+test_latest_release_endpoint_selection() {
+	load_function trim_value
+	load_function normalize_release_tag
+	load_function resolve_v2_release_tag
+	load_function normalize_release_query_mode
+	load_function get_release_query_modes
+	load_function normalize_download_mirror
+	load_function repo_to_mirror_project
+	load_function get_download_mirror_candidates
+	load_function select_download_mirror
+	load_function get_release_api_candidates
+
+	# A `latest` request must try the newest release first, including
+	# pre-releases, and only then fall back to the stable channel.
+	latest_modes="$(get_release_query_modes latest)"
+	assert_equal "$(printf '%s\n' newest stable)" "$latest_modes" \
+		"latest no longer prioritises the newest release before stable"
+
+	newest_candidates="$(get_release_api_candidates vnt-dev/vnt latest gh-proxy newest)"
+	assert_equal "https://api.github.com/repos/vnt-dev/vnt/releases" "$newest_candidates" \
+		"newest query no longer uses the pre-release-inclusive Releases list"
+	if printf '%s\n' "$newest_candidates" | grep -q '/releases/latest$'; then
+		fail "newest query still uses the pre-release-excluding endpoint"
+	fi
+
+	stable_candidates="$(get_release_api_candidates vnt-dev/vnt latest gh-proxy stable)"
+	assert_equal "https://api.github.com/repos/vnt-dev/vnt/releases/latest" "$stable_candidates" \
+		"stable fallback no longer uses the official stable latest endpoint"
+
+	legacy_candidates="$(get_release_api_candidates vnt-dev/vnt latest gh-proxy)"
+	assert_equal "$newest_candidates" "$legacy_candidates" \
+		"a bare latest request no longer defaults to the newest channel"
+
+	# The pre-release-excluding endpoint may only appear inside the stable
+	# tier, never in the newest tier that a bare `latest` request uses.
+	if ! grep -Fq 'echo "https://api.github.com/repos/${repo}/releases/latest"' "$INIT_SCRIPT"; then
+		fail "init script no longer implements the stable fallback tier"
+	fi
+
+	fixed_modes="$(get_release_query_modes v2.0.9)"
+	assert_equal "fixed" "$fixed_modes" "a fixed tag no longer uses the fixed channel"
+
+	fixed_candidates="$(get_release_api_candidates vnt-dev/vnt v2.0.9 github)"
+	assert_equal "$(printf '%s\n' \
+		"https://api.github.com/repos/vnt-dev/vnt/releases/tags/2.0.9" \
+		"https://api.github.com/repos/vnt-dev/vnt/releases/tags/v2.0.9")" \
+		"$fixed_candidates" "fixed tag still resolves through the tag endpoints"
+	printf 'PASS: latest prefers the newest release and falls back to stable\n'
+}
+
+test_stable_release_selection() {
+	# This helper contains an embedded awk program whose closing braces start
+	# at column 0, so extract it by range instead of by brace matching.
+	definition="$(awk '
+		/^extract_first_stable_release_object\(\) \{/ { copying = 1 }
+		/^extract_release_object_by_tag\(\) \{/ { exit }
+		copying { print }
+	' "$INIT_SCRIPT")"
+	[ -n "$definition" ] || fail "extract_first_stable_release_object was not found"
+	eval "$definition"
+
+	dir="$(mktemp -d)"
+	trap 'rm -rf "$dir"' EXIT INT TERM
+
+	cat >"$dir/releases.json" <<'EOF'
+[
+  {"tag_name":"v2.0.9","prerelease":true,"draft":false,"assets":[{"name":"newest"}]},
+  {"tag_name":"v2.0.8","prerelease":false,"draft":false,"assets":[{"name":"stable"}]},
+  {"tag_name":"v2.0.7","prerelease":false,"draft":false,"assets":[{"name":"older"}]}
+]
+EOF
+	extract_first_stable_release_object "$dir/releases.json" "$dir/stable.json" || \
+		fail "no stable release was extracted"
+	grep -Fq '"tag_name":"v2.0.8"' "$dir/stable.json" || \
+		fail "stable selection did not skip the pre-release entry"
+	if grep -Fq '"tag_name":"v2.0.9"' "$dir/stable.json"; then
+		fail "stable selection still picked the pre-release entry"
+	fi
+
+	cat >"$dir/draft.json" <<'EOF'
+[
+  {"tag_name":"v2.0.9","prerelease":false,"draft":true,"assets":[{"name":"draft"}]},
+  {"tag_name":"v2.0.8","prerelease":false,"draft":false,"assets":[{"name":"stable"}]}
+]
+EOF
+	extract_first_stable_release_object "$dir/draft.json" "$dir/stable2.json" || \
+		fail "draft release caused stable selection to fail"
+	grep -Fq '"tag_name":"v2.0.8"' "$dir/stable2.json" || \
+		fail "stable selection did not skip the draft entry"
+
+	rm -rf "$dir"
+	trap - EXIT INT TERM
+	printf 'PASS: stable fallback skips pre-release and draft entries\n'
+}
+
+test_elf_header_detection() {
+	load_function is_elf_binary
+
+	dir="$(mktemp -d)"
+	trap 'rm -rf "$dir"' EXIT INT TERM
+
+	printf '\177ELF\002\001\001\000' >"$dir/real.bin"
+	is_elf_binary "$dir/real.bin" || fail "a real ELF header was rejected"
+
+	printf 'not an elf\n' >"$dir/plain.bin"
+	if is_elf_binary "$dir/plain.bin"; then
+		fail "a plain text file was accepted as ELF"
+	fi
+
+	printf '' >"$dir/empty.bin"
+	if is_elf_binary "$dir/empty.bin"; then
+		fail "an empty file was accepted as ELF"
+	fi
+
+	if grep -Fq 'od -An -tx1 -N4' "$INIT_SCRIPT" ||
+		grep -Fq 'od -An -tx1 -N4' "$UPLOAD_WORKER_SCRIPT"; then
+		fail "ELF detection still relies on GNU od options unsupported by BusyBox"
+	fi
+
+	rm -rf "$dir"
+	trap - EXIT INT TERM
+	printf 'PASS: ELF header detection works without GNU od\n'
+}
+
 test_download_timeouts_and_archive_checks() {
 	download_definition="$(awk '
 		/^download_file\(\) \{/ { copying = 1 }
@@ -189,6 +314,9 @@ test_mirror_candidates
 test_custom_url_handling
 test_defaults_and_retry_limits
 test_release_tag_matching
+test_latest_release_endpoint_selection
+test_stable_release_selection
+test_elf_header_detection
 test_download_timeouts_and_archive_checks
 test_archive_safety
 printf 'download-mirror tests passed\n'

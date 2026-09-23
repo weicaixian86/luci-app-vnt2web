@@ -128,7 +128,6 @@ local required_string_keys = {
 }
 
 local legacy_key_aliases = {
-	cmd_port = "ctrl_port",
 	port = "tunnel_port",
 	use_channel_type = "rtx",
 	compressor = "compress",

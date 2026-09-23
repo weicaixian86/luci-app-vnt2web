@@ -150,7 +150,15 @@ jobs:
         shell: bash
         run: |
           cd sdk
+          # The first defconfig scans the freshly copied package so its config
+          # symbol exists. OpenWrt only emits an install archive from
+          # `make package/.../compile` when CONFIG_PACKAGE_<name> is set, so the
+          # package is selected explicitly before the final defconfig pass.
           make defconfig
+          sed -i "/^CONFIG_PACKAGE_${PACKAGE_NAME}=/d; /^# CONFIG_PACKAGE_${PACKAGE_NAME} is not set$/d" .config
+          echo "CONFIG_PACKAGE_${PACKAGE_NAME}=y" >> .config
+          make defconfig
+          grep -Eq "^CONFIG_PACKAGE_${PACKAGE_NAME}=[ym]$" .config
 
       - name: Build package
         shell: bash

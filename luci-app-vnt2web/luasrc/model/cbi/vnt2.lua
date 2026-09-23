@@ -975,7 +975,7 @@ local custom_download_mirror_web = w:taboption("advanced", Value, "custom_downlo
 bind_custom_download_mirror(custom_download_mirror_web, "download_mirror")
 
 local download_tag_web = w:taboption("advanced", Value, "download_tag", translate("Web 下载版本"),
-	translate("填写 latest 表示始终获取最新版本，也可填写指定 Release 标签，如 v2.0.18"))
+	translate("填写 latest 时优先获取包含预发布版本的最新发行版，失败后回退稳定版；也可填写指定 Release 标签，如 v2.0.18"))
 download_tag_web.placeholder = "latest"
 download_tag_web.default = "latest"
 download_tag_web.validate = validate_nonempty
