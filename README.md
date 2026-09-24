@@ -2,7 +2,13 @@
 
 这是一个仅用于管理 `vnt2_web` 客户端的 OpenWrt LuCI 插件。
 
-运行时配置文件固定为 `/etc/config/vnt2.toml`。
+默认运行时配置文件为 `/etc/config/vnt2web.toml`。LuCI 创建额外客户端配置时，会在同一目录使用 `vnt2web-*.toml` 文件名保存。
+
+`/etc/config/vnt2` 是 OpenWrt LuCI/UCI 配置文件，继续用于保存页面设置；它不是 `vnt2_web` 的运行时 TOML。默认客户端运行时 TOML 为 `/etc/config/vnt2web.toml`，额外配置只允许使用同目录的 `vnt2web-*.toml`。
+
+本插件只管理 `vnt2_web` 客户端，不包含或管理 `vnts2` 服务端。插件不会创建、安装、读取、修改、迁移或删除 `/etc/config/vnts2.toml`；设备上已有的该文件属于独立服务的配置。
+
+配置列表只显示 `vnt2web.toml` 和 `vnt2web-*.toml`。默认文件不可删除，额外配置可以编辑、启动、重启和删除；其他 TOML 文件不会被扫描或管理。
 
 ## 包名称说明
 

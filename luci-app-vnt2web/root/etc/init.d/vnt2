@@ -12,7 +12,7 @@ DOWNLOAD_LOG="/tmp/vnt2-download.log"
 
 WEB_TIME="/tmp/vnt2_web_time"
 
-WEB_CONF_DEFAULT="/etc/config/vnt2.toml"
+WEB_CONF_DEFAULT="/etc/config/vnt2web.toml"
 
 WEB_CONF_FILE=""
 

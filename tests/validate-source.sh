@@ -44,7 +44,7 @@ resolve_source_dir() {
 }
 
 check_project_contracts() {
-	legacy_pattern='vnt2[_-](cli|ctrl)|vnts2'
+	legacy_pattern='vnt2[_-](cli|ctrl)'
 	legacy_matches="$(
 		grep -REIl --exclude=validate-source.sh "$legacy_pattern" \
 			"$SOURCE_DIR" "${ROOT_DIR}/tests" "${ROOT_DIR}/.github" "${ROOT_DIR}/README.md" 2>/dev/null || true
@@ -60,10 +60,24 @@ check_project_contracts() {
 		fail "package version is not 2.0.53"
 	grep -Fq 'PKG_RELEASE:=2' "$SOURCE_DIR/Makefile" ||
 		fail "package release is not 2"
-	grep -Fq 'WEB_CONF_DEFAULT="/etc/config/vnt2.toml"' "$SOURCE_DIR/root/etc/init.d/vnt2" ||
+	grep -Fq 'WEB_CONF_DEFAULT="/etc/config/vnt2web.toml"' "$SOURCE_DIR/root/etc/init.d/vnt2" ||
 		fail "runtime TOML path is not fixed in the init script"
-	grep -Fq 'M.TOML_FILE = "/etc/config/vnt2.toml"' "$SOURCE_DIR/luasrc/model/vnt2_toml.lua" ||
+	grep -Fq 'M.TOML_FILE = "/etc/config/vnt2web.toml"' "$SOURCE_DIR/luasrc/model/vnt2_toml.lua" ||
 		fail "runtime TOML path is not fixed in the Lua TOML module"
+	grep -Fq 'return "/etc/config/vnt2web.toml"' "$SOURCE_DIR/luasrc/model/cbi/vnt2.lua" ||
+		fail "LuCI does not display the fixed runtime TOML path"
+	if grep -R -Fq '/etc/config/vnt2.toml' "$SOURCE_DIR"; then
+		fail "legacy runtime TOML path remains in plugin source"
+	fi
+	if grep -R -Fq '/etc/config/vnts2.toml' "$SOURCE_DIR"; then
+		fail "server TOML path must not be managed or packaged by the client plugin"
+	fi
+	if find "$SOURCE_DIR" -type f -iname '*vnts2*' -print -quit | grep -q .; then
+		fail "server files must not be packaged by the client plugin"
+	fi
+	if grep -R -Eiq '下载日志|Web 日志|高级设置' "$SOURCE_DIR"; then
+		fail "obsolete log or advanced-settings labels remain in plugin source"
+	fi
 	grep -Fq 'option web_token' "$SOURCE_DIR/root/etc/config/vnt2" ||
 		fail "default config does not define web_token"
 	grep -Fq 'procd_set_param command /bin/sh -c "exec \"${web_bin}\" --addr \"${web_addr}\" --conf \"${WEB_CONF_FILE}\" --token \"${web_token}\"' \

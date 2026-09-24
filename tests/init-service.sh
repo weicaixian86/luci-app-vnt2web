@@ -261,10 +261,18 @@ test_idempotent_uci_helpers() {
 }
 
 test_private_toml_permissions() {
-	grep -Fq 'M.TOML_FILE = "/etc/config/vnt2.toml"' "${ROOT_DIR}/luci-app-vnt2web/luasrc/model/vnt2_toml.lua" || \
-		fail "Lua TOML path is not fixed to /etc/config/vnt2.toml"
-	grep -Fq 'WEB_CONF_DEFAULT="/etc/config/vnt2.toml"' "$INIT_SCRIPT" || \
-		fail "init TOML path is not fixed to /etc/config/vnt2.toml"
+	grep -Fq 'M.TOML_FILE = "/etc/config/vnt2web.toml"' "${ROOT_DIR}/luci-app-vnt2web/luasrc/model/vnt2_toml.lua" || \
+		fail "Lua TOML path is not fixed to /etc/config/vnt2web.toml"
+	grep -Fq 'WEB_CONF_DEFAULT="/etc/config/vnt2web.toml"' "$INIT_SCRIPT" || \
+		fail "init TOML path is not fixed to /etc/config/vnt2web.toml"
+	grep -Fq 'return "/etc/config/vnt2web.toml"' "$CBI_SCRIPT" || \
+		fail "LuCI does not display /etc/config/vnt2web.toml"
+	if grep -Fq '/etc/config/vnt2.toml' "$INIT_SCRIPT" "${ROOT_DIR}/luci-app-vnt2web/luasrc/model/vnt2_toml.lua" "$CBI_SCRIPT"; then
+		fail "legacy runtime TOML path remains in plugin source"
+	fi
+	if grep -Fq '/etc/config/vnts2.toml' "$INIT_SCRIPT" "${ROOT_DIR}/luci-app-vnt2web/luasrc/model/vnt2_toml.lua" "$CBI_SCRIPT"; then
+		fail "server TOML path must not be managed by the client plugin"
+	fi
 	if grep -Fq 'web_conf_file' "$INIT_SCRIPT" "${ROOT_DIR}/luci-app-vnt2web/root/etc/config/vnt2" "${ROOT_DIR}/luci-app-vnt2web/luasrc/model/vnt2_toml.lua"; then
 		fail "runtime TOML path is still configurable through UCI"
 	fi
@@ -289,6 +297,8 @@ test_private_toml_permissions() {
 		fail "existing TOML file permissions are not repaired to 0600"
 	grep -Fq 'return secure_existing_toml(M.TOML_FILE)' "${ROOT_DIR}/luci-app-vnt2web/luasrc/model/vnt2_toml.lua" || \
 		fail "existing TOML permissions are not repaired"
+	grep -Fq 'The default TOML is also editable from the Web multi-config page' "${ROOT_DIR}/luci-app-vnt2web/luasrc/model/vnt2_toml.lua" || \
+		fail "existing default TOML would be overwritten during service start"
 	grep -Fq 'os.rename(temp, path)' "${ROOT_DIR}/luci-app-vnt2web/luasrc/model/vnt2_toml.lua" || \
 		fail "Lua TOML writes are not atomically replaced"
 	grep -Fq 'local exported = toml.export_uci_to_toml(uci)' "$INIT_SCRIPT" || \

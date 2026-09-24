@@ -4,7 +4,7 @@ local nixio = require "nixio"
 
 local M = {}
 
-M.TOML_FILE = "/etc/config/vnt2.toml"
+M.TOML_FILE = "/etc/config/vnt2web.toml"
 
 local LEGACY_DEFAULT_CLIENT_SERVER = "tcp://0.0.0.0:29872"
 local DEFAULT_CLIENT_SERVER = "tcp://1.1.1.1:29872"
@@ -535,6 +535,12 @@ function M.ensure_toml_file(uci)
 end
 
 function M.export_uci_to_toml(uci)
+	-- The default TOML is also editable from the Web multi-config page. Keep
+	-- an existing file intact and only repair its private permissions.
+	if fs.access(M.TOML_FILE) then
+		return secure_existing_toml(M.TOML_FILE)
+	end
+
 	local web = build_web_toml_data(uci)
 
 	local ok, err = M.write_toml(M.TOML_FILE, web, web_order)

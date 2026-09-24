@@ -145,7 +145,7 @@ local function add_file_upload_handler(note_options)
 				return
 			end
 
-			set_note(translate("上传文件已接收并进入后台处理队列，请查看下载日志获取安装结果。"))
+			set_note(translate("上传文件已接收并进入后台处理队列，请查看运行日志获取安装结果。"))
 		end
 	end)
 end
@@ -937,7 +937,7 @@ end
 
 local web_conf_path = w:taboption("general", DummyValue, "_web_conf_path", translate("配置文件路径"))
 web_conf_path.cfgvalue = function()
-	return "/etc/config/vnt2.toml"
+	return "/etc/config/vnt2web.toml"
 end
 
 local download_mirror_web = w:taboption("general", ListValue, "download_mirror", translate("Web 下载镜像源"))
