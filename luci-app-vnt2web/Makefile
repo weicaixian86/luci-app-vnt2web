@@ -7,8 +7,8 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-vnt2web
-PKG_VERSION:=2.0.53
-PKG_RELEASE:=2
+PKG_VERSION:=2.0.54
+PKG_RELEASE:=1
 
 LUCI_TITLE:=luci-app-vnt2web - LuCI support for VNT2 Web
 LUCI_DESCRIPTION:=luci-app-vnt2web OpenWrt LuCI application for managing the VNT2 Web client
@@ -49,7 +49,8 @@ chmod 0755 \
   "$${IPKG_INSTROOT}/etc/init.d/vnt2-version-worker" \
   "$${IPKG_INSTROOT}/usr/libexec/vnt2/restart-worker" \
   "$${IPKG_INSTROOT}/usr/libexec/vnt2/upload-worker" \
-  "$${IPKG_INSTROOT}/usr/libexec/vnt2/version-worker" >/dev/null 2>&1
+  "$${IPKG_INSTROOT}/usr/libexec/vnt2/version-worker" \
+  "$${IPKG_INSTROOT}/usr/libexec/vnt2/cleanup-default-instance" >/dev/null 2>&1
 if [ -f /tmp/vnt2_backup ] ; then
   echo "发现 vnt2 备份配置文件 /tmp/vnt2_backup，开始恢复到 /etc/config/vnt2"
   mv -f /tmp/vnt2_backup /etc/config/vnt2
@@ -63,6 +64,7 @@ if [ -z "$${IPKG_INSTROOT}" ] ; then
   /etc/init.d/vnt2-worker restart >/dev/null 2>&1
   /etc/init.d/vnt2-version-worker enable >/dev/null 2>&1
   /etc/init.d/vnt2-version-worker restart >/dev/null 2>&1
+  /etc/init.d/vnt2 schedule_restart >/dev/null 2>&1
 fi
 endef
 

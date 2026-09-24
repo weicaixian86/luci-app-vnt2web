@@ -10,6 +10,7 @@ UPLOAD_WORKER_INIT_SCRIPT="${ROOT_DIR}/luci-app-vnt2web/root/etc/init.d/vnt2-upl
 UPLOAD_WORKER_SCRIPT="${ROOT_DIR}/luci-app-vnt2web/root/usr/libexec/vnt2/upload-worker"
 VERSION_WORKER_INIT_SCRIPT="${ROOT_DIR}/luci-app-vnt2web/root/etc/init.d/vnt2-version-worker"
 VERSION_WORKER_SCRIPT="${ROOT_DIR}/luci-app-vnt2web/root/usr/libexec/vnt2/version-worker"
+DEFAULT_INSTANCE_CLEANUP="${ROOT_DIR}/luci-app-vnt2web/root/usr/libexec/vnt2/cleanup-default-instance"
 PACKAGE_MAKEFILE="${ROOT_DIR}/luci-app-vnt2web/Makefile"
 CBI_SCRIPT="${ROOT_DIR}/luci-app-vnt2web/luasrc/model/cbi/vnt2.lua"
 CONTROLLER="${ROOT_DIR}/luci-app-vnt2web/luasrc/controller/vnt2.lua"
@@ -136,10 +137,19 @@ test_worker_package_lifecycle() {
 		'/etc/init.d/vnt2-version-worker' \
 		'/usr/libexec/vnt2/restart-worker' \
 		'/usr/libexec/vnt2/upload-worker' \
-		'/usr/libexec/vnt2/version-worker'
+		'/usr/libexec/vnt2/version-worker' \
+		'/usr/libexec/vnt2/cleanup-default-instance'
 	do
 		grep -Fq "$path" "$PACKAGE_MAKEFILE" || fail "package lifecycle omits $path"
 	done
+	grep -Fq 'DEFAULT_INSTANCE_CLEANUP="/usr/libexec/vnt2/cleanup-default-instance"' "$INIT_SCRIPT" || \
+		fail "main service does not reference the default-instance cleanup helper"
+	grep -Fq '"${DEFAULT_INSTANCE_CLEANUP}" "127.0.0.1" "${web_port}" "${web_token}"' "$INIT_SCRIPT" || \
+		fail "main service does not schedule compatibility cleanup after Web startup"
+	grep -Fq '\"status\":\"stopped\"' "$DEFAULT_INSTANCE_CLEANUP" || \
+		fail "cleanup helper does not limit removal to stopped instances"
+	grep -Fq '/etc/init.d/vnt2 schedule_restart' "$PACKAGE_MAKEFILE" || \
+		fail "package postinst does not queue a main service restart after installation"
 	grep -Fq '/etc/init.d/vnt2-worker enable' "$PACKAGE_MAKEFILE" || fail "postinst does not enable the worker"
 	grep -Fq '/etc/init.d/vnt2-worker restart' "$PACKAGE_MAKEFILE" || fail "postinst does not start the worker"
 	grep -Fq '/etc/init.d/vnt2-worker stop' "$PACKAGE_MAKEFILE" || fail "prerm does not stop the worker"
@@ -154,6 +164,68 @@ test_worker_package_lifecycle() {
 	grep -Fq '/etc/init.d/vnt2-version-worker disable' "$PACKAGE_MAKEFILE" || fail "prerm does not disable the version worker"
 
 	printf 'PASS: package installs and manages all workers\n'
+}
+
+test_default_instance_cleanup_behavior() {
+	dir="$(mktemp -d)"
+	trap 'rm -rf "$dir"' EXIT INT TERM
+	real_path="$PATH"
+
+	cat >"$dir/curl" <<'EOF'
+#!/bin/sh
+args="$*"
+case "$args" in
+	*'/api/instances'*)
+		cat "$MOCK_INSTANCES"
+	;;
+	*'/api/start/status?'*)
+		cat "$MOCK_STATUS"
+	;;
+	*'-X DELETE'*'/api/instance?'*)
+		printf '%s\n' "$args" >>"$MOCK_CALLS"
+		printf '%s\n' '{"code":0,"msg":"success","data":null}'
+	;;
+	*)
+		exit 1
+	;;
+esac
+EOF
+	chmod 0755 "$dir/curl"
+
+	MOCK_INSTANCES="$dir/instances.json"
+	MOCK_STATUS="$dir/status.json"
+	MOCK_CALLS="$dir/calls"
+	export MOCK_INSTANCES MOCK_STATUS MOCK_CALLS
+
+	cat >"$MOCK_INSTANCES" <<'EOF'
+{
+  "code": 0,
+  "data": [{ "status": "stopped", "file_name": "vnt2web.toml" }]
+}
+EOF
+	cat >"$MOCK_STATUS" <<'EOF'
+{ "code": 0, "data": { "logs": [], "status": "stopped" } }
+EOF
+	PATH="$dir:$real_path" VNT2_CLEANUP_ATTEMPTS=1 VNT2_CLEANUP_DELAY=0 \
+		sh "$DEFAULT_INSTANCE_CLEANUP" 127.0.0.1 19099 abc123 vnt2web.toml
+	[ "$(wc -l <"$MOCK_CALLS" | tr -d ' ')" -eq 1 ] || \
+		fail "stopped default instance was not dismissed exactly once"
+
+	: >"$MOCK_CALLS"
+	printf '%s\n' '{"code":0,"data":{"status":"running","logs":[]}}' >"$MOCK_STATUS"
+	PATH="$dir:$real_path" VNT2_CLEANUP_ATTEMPTS=1 VNT2_CLEANUP_DELAY=0 \
+		sh "$DEFAULT_INSTANCE_CLEANUP" 127.0.0.1 19099 abc123 vnt2web.toml
+	[ ! -s "$MOCK_CALLS" ] || fail "running default instance was dismissed"
+
+	: >"$MOCK_CALLS"
+	printf '%s\n' '{"code":0,"data":[{"file_name":"vnt2web-extra.toml","status":"stopped"}]}' >"$MOCK_INSTANCES"
+	PATH="$dir:$real_path" VNT2_CLEANUP_ATTEMPTS=1 VNT2_CLEANUP_DELAY=0 \
+		sh "$DEFAULT_INSTANCE_CLEANUP" 127.0.0.1 19099 abc123 vnt2web.toml
+	[ ! -s "$MOCK_CALLS" ] || fail "an unrelated instance was dismissed"
+
+	rm -rf "$dir"
+	trap - EXIT INT TERM
+	printf 'PASS: compatibility cleanup only dismisses a stopped default instance\n'
 }
 
 test_apply_stop_keeps_network() {
@@ -371,6 +443,7 @@ test_reload_only_queues_marker
 test_luci_general_tab_omits_removed_controls
 test_web_token_support
 test_worker_package_lifecycle
+test_default_instance_cleanup_behavior
 test_apply_stop_keeps_network
 test_start_service_propagates_component_failure
 test_idempotent_uci_helpers

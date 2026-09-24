@@ -56,10 +56,10 @@ check_project_contracts() {
 
 	grep -Fq 'PKG_NAME:=luci-app-vnt2web' "$SOURCE_DIR/Makefile" ||
 		fail "package name is not luci-app-vnt2web"
-	grep -Fq 'PKG_VERSION:=2.0.53' "$SOURCE_DIR/Makefile" ||
-		fail "package version is not 2.0.53"
-	grep -Fq 'PKG_RELEASE:=2' "$SOURCE_DIR/Makefile" ||
-		fail "package release is not 2"
+	grep -Fq 'PKG_VERSION:=2.0.54' "$SOURCE_DIR/Makefile" ||
+		fail "package version is not 2.0.54"
+	grep -Fq 'PKG_RELEASE:=1' "$SOURCE_DIR/Makefile" ||
+		fail "package release is not 1"
 	grep -Fq 'WEB_CONF_DEFAULT="/etc/config/vnt2web.toml"' "$SOURCE_DIR/root/etc/init.d/vnt2" ||
 		fail "runtime TOML path is not fixed in the init script"
 	grep -Fq 'M.TOML_FILE = "/etc/config/vnt2web.toml"' "$SOURCE_DIR/luasrc/model/vnt2_toml.lua" ||

@@ -24,6 +24,7 @@ DOWNLOAD_MIRROR_RETRIES=3
 RESTART_PENDING_FILE="/tmp/vnt2-restart.pending"
 
 INSTALL_BIN_DIR="/usr/bin"
+DEFAULT_INSTANCE_CLEANUP="/usr/libexec/vnt2/cleanup-default-instance"
 
 . /lib/functions.sh
 . /lib/functions/procd.sh
@@ -2041,6 +2042,11 @@ start_web_instance() {
 	procd_set_param limits nofile="1048576 1048576"
 	procd_set_param term_timeout 10
 	procd_close_instance
+	# Compatibility for downloaded releases that still register --conf as an
+	# instance. Newer vnt2_web builds already leave the initial list empty.
+	if [ -x "${DEFAULT_INSTANCE_CLEANUP}" ]; then
+		"${DEFAULT_INSTANCE_CLEANUP}" "127.0.0.1" "${web_port}" "${web_token}" "$(basename "${WEB_CONF_FILE}")" >/dev/null 2>&1 &
+	fi
 	date +%s >"${WEB_TIME}"
 	log_web 'start command submitted'
 }
