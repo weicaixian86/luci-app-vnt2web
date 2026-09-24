@@ -265,8 +265,10 @@ test_private_toml_permissions() {
 		fail "Lua TOML path is not fixed to /etc/config/vnt2web.toml"
 	grep -Fq 'WEB_CONF_DEFAULT="/etc/config/vnt2web.toml"' "$INIT_SCRIPT" || \
 		fail "init TOML path is not fixed to /etc/config/vnt2web.toml"
-	grep -Fq 'return "/etc/config/vnt2web.toml"' "$CBI_SCRIPT" || \
-		fail "LuCI does not display /etc/config/vnt2web.toml"
+	grep -Fq 'translate("Web配置文件路径")' "$CBI_SCRIPT" || \
+		fail "LuCI does not display the Web configuration path label"
+	grep -Fq 'return "/vnt_config/*.toml"' "$CBI_SCRIPT" || \
+		fail "LuCI does not display /vnt_config/*.toml"
 	if grep -Fq '/etc/config/vnt2.toml' "$INIT_SCRIPT" "${ROOT_DIR}/luci-app-vnt2web/luasrc/model/vnt2_toml.lua" "$CBI_SCRIPT"; then
 		fail "legacy runtime TOML path remains in plugin source"
 	fi

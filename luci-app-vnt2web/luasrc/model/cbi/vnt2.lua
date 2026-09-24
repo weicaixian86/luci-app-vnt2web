@@ -935,9 +935,9 @@ web_enabled.write = function(self, section, value)
 	self.map.uci:set(self.map.config, section, self.option, value)
 end
 
-local web_conf_path = w:taboption("general", DummyValue, "_web_conf_path", translate("配置文件路径"))
+local web_conf_path = w:taboption("general", DummyValue, "_web_conf_path", translate("Web配置文件路径"))
 web_conf_path.cfgvalue = function()
-	return "/etc/config/vnt2web.toml"
+	return "/vnt_config/*.toml"
 end
 
 local download_mirror_web = w:taboption("general", ListValue, "download_mirror", translate("Web 下载镜像源"))

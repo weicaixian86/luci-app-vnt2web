@@ -64,8 +64,10 @@ check_project_contracts() {
 		fail "runtime TOML path is not fixed in the init script"
 	grep -Fq 'M.TOML_FILE = "/etc/config/vnt2web.toml"' "$SOURCE_DIR/luasrc/model/vnt2_toml.lua" ||
 		fail "runtime TOML path is not fixed in the Lua TOML module"
-	grep -Fq 'return "/etc/config/vnt2web.toml"' "$SOURCE_DIR/luasrc/model/cbi/vnt2.lua" ||
-		fail "LuCI does not display the fixed runtime TOML path"
+	grep -Fq 'translate("Web配置文件路径")' "$SOURCE_DIR/luasrc/model/cbi/vnt2.lua" ||
+		fail "LuCI does not display the Web configuration path label"
+	grep -Fq 'return "/vnt_config/*.toml"' "$SOURCE_DIR/luasrc/model/cbi/vnt2.lua" ||
+		fail "LuCI does not display the Web configuration path pattern"
 	if grep -R -Fq '/etc/config/vnt2.toml' "$SOURCE_DIR"; then
 		fail "legacy runtime TOML path remains in plugin source"
 	fi
