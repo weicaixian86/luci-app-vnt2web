@@ -31,8 +31,8 @@ jobs:
           - openwrt_version: "24.10.0"
             sdk_url: "https://downloads.openwrt.org/releases/24.10.0/targets/x86/64/openwrt-sdk-24.10.0-x86-64_gcc-13.3.0_musl.Linux-x86_64.tar.zst"
             package_format: "ipk"
-          - openwrt_version: "25.12.0"
-            sdk_url: "https://downloads.openwrt.org/releases/25.12.0/targets/x86/64/openwrt-sdk-25.12.0-x86-64_gcc-14.3.0_musl.Linux-x86_64.tar.zst"
+          - openwrt_version: "25.12.5"
+            sdk_url: "https://downloads.openwrt.org/releases/25.12.5/targets/x86/64/openwrt-sdk-25.12.5-x86-64_gcc-14.3.0_musl.Linux-x86_64.tar.zst"
             package_format: "apk"
 
     steps:
@@ -128,6 +128,23 @@ jobs:
           mkdir -p sdk
           tar --zstd -xf openwrt-sdk.tar.zst -C sdk --strip-components=1
 
+      - name: Configure APK signing key
+        if: matrix.package_format == 'apk'
+        shell: bash
+        env:
+          APK_SIGNING_KEY_B64: ${{ secrets.VNT2WEB_APK_SIGNING_KEY_B64 }}
+        run: |
+          test -n "${APK_SIGNING_KEY_B64:-}" || {
+            echo "VNT2WEB_APK_SIGNING_KEY_B64 is required for signed OpenWrt APK builds"
+            exit 1
+          }
+          printf '%s' "$APK_SIGNING_KEY_B64" | base64 --decode > sdk/private-key.pem
+          openssl ec -in sdk/private-key.pem -check -noout
+          openssl ec -in sdk/private-key.pem -pubout -out sdk/public-key.pem
+          chmod 600 sdk/private-key.pem
+          test -s sdk/private-key.pem
+          test -s sdk/public-key.pem
+
       - name: Prepare feeds
         shell: bash
         run: |
@@ -145,6 +162,10 @@ jobs:
           rm -rf "package/${PACKAGE_NAME}"
           cp -a "$GITHUB_WORKSPACE/${APP_SOURCE_DIR}" "package/${PACKAGE_NAME}"
           test -f "package/${PACKAGE_NAME}/Makefile"
+          if [ "${{ matrix.package_format }}" = "apk" ]; then
+            mkdir -p "package/${PACKAGE_NAME}/root/etc/apk/keys"
+            cp public-key.pem "package/${PACKAGE_NAME}/root/etc/apk/keys/${PACKAGE_NAME}.pem"
+          fi
 
       - name: Generate defconfig
         shell: bash
@@ -157,8 +178,15 @@ jobs:
           make defconfig
           sed -i "/^CONFIG_PACKAGE_${PACKAGE_NAME}=/d; /^# CONFIG_PACKAGE_${PACKAGE_NAME} is not set$/d" .config
           echo "CONFIG_PACKAGE_${PACKAGE_NAME}=y" >> .config
+          if [ "${{ matrix.package_format }}" = "apk" ]; then
+            sed -i '/^CONFIG_SIGNED_PACKAGES=/d; /^# CONFIG_SIGNED_PACKAGES is not set$/d' .config
+            echo "CONFIG_SIGNED_PACKAGES=y" >> .config
+          fi
           make defconfig
           grep -Eq "^CONFIG_PACKAGE_${PACKAGE_NAME}=[ym]$" .config
+          if [ "${{ matrix.package_format }}" = "apk" ]; then
+            grep -Eq '^CONFIG_SIGNED_PACKAGES=y$' .config
+          fi
 
       - name: Build package
         shell: bash
@@ -191,6 +219,13 @@ jobs:
               exit 1
               ;;
           esac
+          if [ "${{ matrix.package_format }}" = "apk" ]; then
+            APK_HOST_BIN="${GITHUB_WORKSPACE}/sdk/staging_dir/host/bin/apk"
+            test -x "${APK_HOST_BIN}"
+            mkdir -p apk-verify-keys
+            cp sdk/public-key.pem apk-verify-keys/public-key.pem
+            "${APK_HOST_BIN}" --keys-dir "${GITHUB_WORKSPACE}/apk-verify-keys" verify "${SOURCE_PACKAGE_FILE}"
+          fi
           # Release assets use one deterministic name per format. The version
           # is taken from the release tag, and the package metadata carries the
           # same version because the Makefile was rewritten in an earlier step.
@@ -200,6 +235,10 @@ jobs:
           FINAL_PACKAGE_FILE="${PACKAGE_NAME}_${RELEASE_VERSION}-x86_64.${{ matrix.package_format }}"
           cp -f "${SOURCE_PACKAGE_FILE}" "output/${FINAL_PACKAGE_FILE}"
           test -f "output/${FINAL_PACKAGE_FILE}"
+          if [ "${{ matrix.package_format }}" = "apk" ]; then
+            cp -f sdk/public-key.pem "output/${PACKAGE_NAME}-apk-public-key.pem"
+            (cd output && sha256sum "${PACKAGE_NAME}-apk-public-key.pem" > "${PACKAGE_NAME}-apk-public-key.sha256")
+          fi
           echo "Source package file: ${SOURCE_PACKAGE_NAME}"
           echo "Final package file: ${FINAL_PACKAGE_FILE}"
           ls -lah output
@@ -208,7 +247,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: openwrt-${{ matrix.openwrt_version }}-x86_64-${{ matrix.package_format }}
-          path: output/*.${{ matrix.package_format }}
+          path: output/*
           if-no-files-found: error
 
   release:
@@ -242,6 +281,11 @@ jobs:
           APK_FILES="$(find release-assets -maxdepth 1 -type f -name '*.apk' | sort)"
           test "$(printf '%s\n' "${IPK_FILES}" | grep -c .)" -eq 1
           test "$(printf '%s\n' "${APK_FILES}" | grep -c .)" -eq 1
+          APK_PUBLIC_KEYS="$(find release-assets -maxdepth 1 -type f -name '*-apk-public-key.pem' | sort)"
+          APK_PUBLIC_KEY_CHECKSUMS="$(find release-assets -maxdepth 1 -type f -name '*-apk-public-key.sha256' | sort)"
+          test "$(printf '%s\n' "${APK_PUBLIC_KEYS}" | grep -c .)" -eq 1
+          test "$(printf '%s\n' "${APK_PUBLIC_KEY_CHECKSUMS}" | grep -c .)" -eq 1
+          (cd release-assets && sha256sum --check "$(basename "${APK_PUBLIC_KEY_CHECKSUMS}")")
 
           EXPECTED_IPK="${PACKAGE_NAME}_${RELEASE_VERSION}-x86_64.ipk"
           EXPECTED_APK="${PACKAGE_NAME}_${RELEASE_VERSION}-x86_64.apk"
@@ -314,8 +358,7 @@ jobs:
           name: ${{ github.event.inputs.release_tag }}
           body: ${{ env.RELEASE_BODY }}
           files: |
-            release-assets/*.ipk
-            release-assets/*.apk
+            release-assets/*
           draft: false
           prerelease: false
           generate_release_notes: false

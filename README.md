@@ -71,14 +71,47 @@ opkg info luci-app-vnt2web
 opkg list-installed | grep luci-app-vnt2web
 ```
 
-### OpenWrt 25.12.0
+### OpenWrt 25.12.x (APK)
 
-将 `.apk` 文件上传到路由器，例如上传到 `/tmp/`，然后执行：
+APK 使用本项目的签名密钥。首次安装前，需要先从同一个 GitHub Release 下载
+`luci-app-vnt2web-apk-public-key.pem` 和对应的 `.sha256` 文件，并在电脑上核对公钥：
 
 ```sh
-apk add --allow-untrusted /tmp/luci-app-vnt2web*.apk
+sha256sum --check luci-app-vnt2web-apk-public-key.sha256
+```
+
+将已核对的公钥上传到路由器 `/tmp/`，通过 SSH 安装到 APK 信任目录：
+
+```sh
+mkdir -p /etc/apk/keys
+cp /tmp/luci-app-vnt2web-apk-public-key.pem /etc/apk/keys/luci-app-vnt2web.pem
+chmod 0644 /etc/apk/keys/luci-app-vnt2web.pem
+```
+
+之后即可在 LuCI 软件包页面上传并安装签名后的 `.apk`。也可以通过 SSH 安装：
+
+```sh
+apk add /tmp/luci-app-vnt2web*.apk
 apk info luci-app-vnt2web
 ```
+
+之前发布的 APK 无法通过后来生成的公钥验证。需要立即安装旧包，或首次安装时无法
+预先导入公钥，可以通过 SSH 对确认来源的文件执行
+`apk add --allow-untrusted /tmp/luci-app-vnt2web_*.apk`；LuCI 软件包上传页面不会添加
+`--allow-untrusted` 参数。新构建的 APK 会安装自己的公钥，因此使用固定签名密钥时，
+后续版本可直接通过 LuCI 安装或升级。
+
+GitHub Actions 发布签名 APK 需要仓库 Secret `VNT2WEB_APK_SIGNING_KEY_B64`，其值为
+PEM 格式 EC 私钥的单行 Base64。私钥只能由维护者生成并保管，不能提交到仓库；
+同一把私钥必须长期保留，否则新版本需要重新向设备导入新的公钥。维护者可在本地生成：
+
+```sh
+openssl ecparam -name prime256v1 -genkey -noout -out vnt2web-apk-private-key.pem
+base64 -w 0 vnt2web-apk-private-key.pem
+```
+
+将第二条命令的输出设置为仓库 Secret；妥善保管私钥文件，不要提交到仓库。
+
 ## 卸载方法
 
 OpenWrt 24.10.x：
@@ -87,7 +120,7 @@ OpenWrt 24.10.x：
 opkg remove luci-app-vnt2web
 ```
 
-OpenWrt 25.12.0：
+OpenWrt 25.12.x：
 
 ```sh
 apk del luci-app-vnt2web
@@ -107,7 +140,7 @@ make package/luci-app-vnt2web/compile V=s
 编译完成后：
 
 - OpenWrt 24.10.x 生成 `.ipk`
-- OpenWrt 25.12.0 生成 `.apk`
+- OpenWrt 25.12.5 生成签名 `.apk`
 
 ## LuCI 菜单位置
 

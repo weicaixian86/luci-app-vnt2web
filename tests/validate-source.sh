@@ -108,10 +108,28 @@ check_project_contracts() {
 		fail "workflow does not require exactly one OpenWrt package artifact"
 	grep -Fq '${PACKAGE_NAME}"[-_]*) ;;' "$workflow" ||
 		fail "workflow does not verify the OpenWrt package name prefix"
-	grep -Fq 'release-assets/*.ipk' "$workflow" ||
-		fail "release does not upload the IPK artifact"
-	grep -Fq 'release-assets/*.apk' "$workflow" ||
-		fail "release does not upload the APK artifact"
+	grep -Fq "find release-assets -maxdepth 1 -type f -name '*.ipk'" "$workflow" ||
+		fail "release does not validate the IPK artifact"
+	grep -Fq "find release-assets -maxdepth 1 -type f -name '*.apk'" "$workflow" ||
+		fail "release does not validate the APK artifact"
+	grep -Fq 'release-assets/*' "$workflow" ||
+		fail "release does not upload all package and trust assets"
+	grep -Fq 'openwrt_version: "25.12.5"' "$workflow" ||
+		fail "APK build SDK is not aligned to OpenWrt 25.12.5"
+	grep -Fq 'VNT2WEB_APK_SIGNING_KEY_B64' "$workflow" ||
+		fail "APK signing key is not loaded from a GitHub Actions secret"
+	grep -Fq 'CONFIG_SIGNED_PACKAGES=y' "$workflow" ||
+		fail "APK signing is not enabled in the OpenWrt SDK"
+	grep -Fq 'printf '\''%s'\'' "$APK_SIGNING_KEY_B64" | base64 --decode > sdk/private-key.pem' "$workflow" ||
+		fail "APK signing key is not installed at the SDK signing-key path"
+	grep -Fq ' verify "${SOURCE_PACKAGE_FILE}"' "$workflow" ||
+		fail "signed APK is not verified before publishing"
+	grep -Fq 'cp -f sdk/public-key.pem "output/${PACKAGE_NAME}-apk-public-key.pem"' "$workflow" ||
+		fail "APK trust public key is not published"
+	grep -Fq 'cp public-key.pem "package/${PACKAGE_NAME}/root/etc/apk/keys/${PACKAGE_NAME}.pem"' "$workflow" ||
+		fail "APK package does not install its public key for future upgrades"
+	grep -Fq 'sha256sum --check' "$workflow" ||
+		fail "published APK public key checksum is not verified"
 	printf 'PASS: package identity, fixed TOML path, and removed-component checks passed\n'
 }
 
