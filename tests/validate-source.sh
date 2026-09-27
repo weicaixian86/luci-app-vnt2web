@@ -122,6 +122,11 @@ check_project_contracts() {
 		fail "APK signing is not enabled in the OpenWrt SDK"
 	grep -Fq 'printf '\''%s'\'' "$APK_SIGNING_KEY_B64" | base64 --decode > sdk/private-key.pem' "$workflow" ||
 		fail "APK signing key is not installed at the SDK signing-key path"
+	grep -Fq 'openssl ecparam -name prime256v1 -genkey -noout -out sdk/private-key.pem' "$workflow" ||
+		fail "APK build cannot fall back to a one-time signing key"
+	if grep -Fq 'VNT2WEB_APK_SIGNING_KEY_B64 is required' "$workflow"; then
+		fail "missing APK signing secret still aborts the build"
+	fi
 	grep -Fq ' verify "${SOURCE_PACKAGE_FILE}"' "$workflow" ||
 		fail "signed APK is not verified before publishing"
 	grep -Fq 'cp -f sdk/public-key.pem "output/${PACKAGE_NAME}-apk-public-key.pem"' "$workflow" ||

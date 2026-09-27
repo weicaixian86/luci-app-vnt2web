@@ -134,11 +134,13 @@ jobs:
         env:
           APK_SIGNING_KEY_B64: ${{ secrets.VNT2WEB_APK_SIGNING_KEY_B64 }}
         run: |
-          test -n "${APK_SIGNING_KEY_B64:-}" || {
-            echo "VNT2WEB_APK_SIGNING_KEY_B64 is required for signed OpenWrt APK builds"
-            exit 1
-          }
-          printf '%s' "$APK_SIGNING_KEY_B64" | base64 --decode > sdk/private-key.pem
+          if [ -n "${APK_SIGNING_KEY_B64:-}" ]; then
+            printf '%s' "$APK_SIGNING_KEY_B64" | base64 --decode > sdk/private-key.pem
+            echo "Using the persistent APK signing key from VNT2WEB_APK_SIGNING_KEY_B64"
+          else
+            echo "::warning::VNT2WEB_APK_SIGNING_KEY_B64 is not configured; generating a one-time APK signing key. Import the public key published with this release before installing it."
+            openssl ecparam -name prime256v1 -genkey -noout -out sdk/private-key.pem
+          fi
           openssl ec -in sdk/private-key.pem -check -noout
           openssl ec -in sdk/private-key.pem -pubout -out sdk/public-key.pem
           chmod 600 sdk/private-key.pem
