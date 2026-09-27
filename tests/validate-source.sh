@@ -127,8 +127,11 @@ check_project_contracts() {
 	if grep -Fq 'VNT2WEB_APK_SIGNING_KEY_B64 is required' "$workflow"; then
 		fail "missing APK signing secret still aborts the build"
 	fi
-	grep -Fq 'adbsign --reset-signatures --sign-key "${GITHUB_WORKSPACE}/sdk/private-key.pem" "${SOURCE_PACKAGE_FILE}"' "$workflow" ||
-		fail "APK package is not re-signed with the project key"
+	grep -Fq '"${APK_HOST_BIN}" --allow-untrusted adbsign --reset-signatures --sign-key "${GITHUB_WORKSPACE}/sdk/private-key.pem" "${SOURCE_PACKAGE_FILE}"' "$workflow" ||
+		fail "unsigned SDK APK is not re-signed with the project key"
+	if grep -Fq -- '--allow-untrusted verify' "$workflow"; then
+		fail "published APK verification incorrectly allows untrusted signatures"
+	fi
 	grep -Fq ' verify "${SOURCE_PACKAGE_FILE}"' "$workflow" ||
 		fail "signed APK is not verified before publishing"
 	grep -Fq 'cp -f sdk/public-key.pem "output/${PACKAGE_NAME}-apk-public-key.pem"' "$workflow" ||
