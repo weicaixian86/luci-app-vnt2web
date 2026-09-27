@@ -224,6 +224,7 @@ jobs:
           if [ "${{ matrix.package_format }}" = "apk" ]; then
             APK_HOST_BIN="${GITHUB_WORKSPACE}/sdk/staging_dir/host/bin/apk"
             test -x "${APK_HOST_BIN}"
+            "${APK_HOST_BIN}" adbsign --reset-signatures --sign-key "${GITHUB_WORKSPACE}/sdk/private-key.pem" "${SOURCE_PACKAGE_FILE}"
             mkdir -p apk-verify-keys
             cp sdk/public-key.pem apk-verify-keys/public-key.pem
             "${APK_HOST_BIN}" --keys-dir "${GITHUB_WORKSPACE}/apk-verify-keys" verify "${SOURCE_PACKAGE_FILE}"
