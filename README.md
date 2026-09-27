@@ -35,27 +35,3 @@ OpenWrt 25.12.x：
 ```sh
 apk del luci-app-vnt2web
 ```
-
-## 在 OpenWrt 源码树中编译
-
-本仓库根目录下仍有一层插件源码目录。将其中的 `luci-app-vnt2web/` 放入 OpenWrt 的 `package/` 目录，或放入自定义 feed 中，然后执行：
-
-```sh
-git clone <你的仓库地址> /tmp/luci-app-vnt2web-src
-cp -a /tmp/luci-app-vnt2web-src/luci-app-vnt2web package/luci-app-vnt2web
-make menuconfig
-make package/luci-app-vnt2web/compile V=s
-```
-
-编译完成后：
-
-- OpenWrt 24.10.x 生成 `.ipk`
-- OpenWrt 25.12.5 生成签名 `.apk`
-
-## LuCI 菜单位置
-
-安装完成后，在 LuCI 中进入：
-
-```text
-VPN -> VNT2
-```
