@@ -91,6 +91,22 @@ check_project_contracts() {
 		"$SOURCE_DIR/luasrc/model/vnt2_toml.lua"; then
 		fail "runtime TOML path remains configurable through UCI"
 	fi
+	for executable in \
+		"$SOURCE_DIR/root/etc/init.d/vnt2" \
+		"$SOURCE_DIR/root/etc/init.d/vnt2-upload-worker" \
+		"$SOURCE_DIR/root/etc/init.d/vnt2-worker" \
+		"$SOURCE_DIR/root/etc/init.d/vnt2-version-worker" \
+		"$SOURCE_DIR/root/usr/libexec/vnt2/cleanup-default-instance" \
+		"$SOURCE_DIR/root/usr/libexec/vnt2/restart-worker" \
+		"$SOURCE_DIR/root/usr/libexec/vnt2/upload-worker" \
+		"$SOURCE_DIR/root/usr/libexec/vnt2/version-worker"
+	do
+		test -x "$executable" || fail "package executable is not marked executable: $executable"
+		if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+			git ls-files -s -- "$executable" | grep -Eq '^100755 ' ||
+				fail "package executable is not executable in the Git index: $executable"
+		fi
+	done
 
 	workflow="${WORKFLOW_DIR}/build.yml"
 	[ -f "$workflow" ] || fail "build workflow is missing"
