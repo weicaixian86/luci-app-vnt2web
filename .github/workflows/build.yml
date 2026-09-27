@@ -138,7 +138,7 @@ jobs:
             printf '%s' "$APK_SIGNING_KEY_B64" | base64 --decode > sdk/private-key.pem
             echo "Using the persistent APK signing key from VNT2WEB_APK_SIGNING_KEY_B64"
           else
-            echo "::warning::VNT2WEB_APK_SIGNING_KEY_B64 is not configured; generating a one-time APK signing key. Import the public key published with this release before installing it."
+            echo "::warning::VNT2WEB_APK_SIGNING_KEY_B64 is not configured; generating a one-time APK signing key. Install this build once with apk add --allow-untrusted; later trusted upgrades require the same persistent signing key."
             openssl ecparam -name prime256v1 -genkey -noout -out sdk/private-key.pem
           fi
           openssl ec -in sdk/private-key.pem -check -noout
@@ -240,10 +240,6 @@ jobs:
           FINAL_PACKAGE_FILE="${PACKAGE_NAME}_${RELEASE_VERSION}-x86_64.${{ matrix.package_format }}"
           cp -f "${SOURCE_PACKAGE_FILE}" "output/${FINAL_PACKAGE_FILE}"
           test -f "output/${FINAL_PACKAGE_FILE}"
-          if [ "${{ matrix.package_format }}" = "apk" ]; then
-            cp -f sdk/public-key.pem "output/${PACKAGE_NAME}-apk-public-key.pem"
-            (cd output && sha256sum "${PACKAGE_NAME}-apk-public-key.pem" > "${PACKAGE_NAME}-apk-public-key.sha256")
-          fi
           echo "Source package file: ${SOURCE_PACKAGE_NAME}"
           echo "Final package file: ${FINAL_PACKAGE_FILE}"
           ls -lah output
@@ -286,11 +282,6 @@ jobs:
           APK_FILES="$(find release-assets -maxdepth 1 -type f -name '*.apk' | sort)"
           test "$(printf '%s\n' "${IPK_FILES}" | grep -c .)" -eq 1
           test "$(printf '%s\n' "${APK_FILES}" | grep -c .)" -eq 1
-          APK_PUBLIC_KEYS="$(find release-assets -maxdepth 1 -type f -name '*-apk-public-key.pem' | sort)"
-          APK_PUBLIC_KEY_CHECKSUMS="$(find release-assets -maxdepth 1 -type f -name '*-apk-public-key.sha256' | sort)"
-          test "$(printf '%s\n' "${APK_PUBLIC_KEYS}" | grep -c .)" -eq 1
-          test "$(printf '%s\n' "${APK_PUBLIC_KEY_CHECKSUMS}" | grep -c .)" -eq 1
-          (cd release-assets && sha256sum --check "$(basename "${APK_PUBLIC_KEY_CHECKSUMS}")")
 
           EXPECTED_IPK="${PACKAGE_NAME}_${RELEASE_VERSION}-x86_64.ipk"
           EXPECTED_APK="${PACKAGE_NAME}_${RELEASE_VERSION}-x86_64.apk"

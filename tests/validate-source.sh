@@ -128,8 +128,14 @@ check_project_contracts() {
 		fail "release does not validate the IPK artifact"
 	grep -Fq "find release-assets -maxdepth 1 -type f -name '*.apk'" "$workflow" ||
 		fail "release does not validate the APK artifact"
+	if grep -Fq 'output/${PACKAGE_NAME}-apk-public-key.pem' "$workflow"; then
+		fail "APK public key is still published as a separate release asset"
+	fi
+	if grep -Fq 'APK_PUBLIC_KEYS=' "$workflow" || grep -Fq 'APK_PUBLIC_KEY_CHECKSUMS=' "$workflow"; then
+		fail "release still expects separate APK public-key assets"
+	fi
 	grep -Fq 'release-assets/*' "$workflow" ||
-		fail "release does not upload all package and trust assets"
+		fail "release does not upload all package assets"
 	grep -Fq 'openwrt_version: "25.12.5"' "$workflow" ||
 		fail "APK build SDK is not aligned to OpenWrt 25.12.5"
 	grep -Fq 'VNT2WEB_APK_SIGNING_KEY_B64' "$workflow" ||
@@ -150,12 +156,8 @@ check_project_contracts() {
 	fi
 	grep -Fq ' verify "${SOURCE_PACKAGE_FILE}"' "$workflow" ||
 		fail "signed APK is not verified before publishing"
-	grep -Fq 'cp -f sdk/public-key.pem "output/${PACKAGE_NAME}-apk-public-key.pem"' "$workflow" ||
-		fail "APK trust public key is not published"
 	grep -Fq 'cp public-key.pem "package/${PACKAGE_NAME}/root/etc/apk/keys/${PACKAGE_NAME}.pem"' "$workflow" ||
 		fail "APK package does not install its public key for future upgrades"
-	grep -Fq 'sha256sum --check' "$workflow" ||
-		fail "published APK public key checksum is not verified"
 	printf 'PASS: package identity, fixed TOML path, and removed-component checks passed\n'
 }
 
