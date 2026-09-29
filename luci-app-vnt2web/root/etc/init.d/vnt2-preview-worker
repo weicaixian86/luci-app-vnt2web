@@ -4,7 +4,7 @@ START=97
 STOP=03
 USE_PROCD=1
 
-PROG="/usr/libexec/vnt2/version-worker"
+PROG="/usr/libexec/vnt2/preview-worker"
 
 start_service() {
 	procd_open_instance

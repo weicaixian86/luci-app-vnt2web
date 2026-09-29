@@ -8,9 +8,8 @@ WORKER_INIT_SCRIPT="${ROOT_DIR}/luci-app-vnt2web/root/etc/init.d/vnt2-worker"
 WORKER_SCRIPT="${ROOT_DIR}/luci-app-vnt2web/root/usr/libexec/vnt2/restart-worker"
 UPLOAD_WORKER_INIT_SCRIPT="${ROOT_DIR}/luci-app-vnt2web/root/etc/init.d/vnt2-upload-worker"
 UPLOAD_WORKER_SCRIPT="${ROOT_DIR}/luci-app-vnt2web/root/usr/libexec/vnt2/upload-worker"
-VERSION_WORKER_INIT_SCRIPT="${ROOT_DIR}/luci-app-vnt2web/root/etc/init.d/vnt2-version-worker"
-VERSION_WORKER_SCRIPT="${ROOT_DIR}/luci-app-vnt2web/root/usr/libexec/vnt2/version-worker"
-DEFAULT_INSTANCE_CLEANUP="${ROOT_DIR}/luci-app-vnt2web/root/usr/libexec/vnt2/cleanup-default-instance"
+PREVIEW_WORKER_INIT_SCRIPT="${ROOT_DIR}/luci-app-vnt2web/root/etc/init.d/vnt2-preview-worker"
+PREVIEW_WORKER_SCRIPT="${ROOT_DIR}/luci-app-vnt2web/root/usr/libexec/vnt2/preview-worker"
 PACKAGE_MAKEFILE="${ROOT_DIR}/luci-app-vnt2web/Makefile"
 CBI_SCRIPT="${ROOT_DIR}/luci-app-vnt2web/luasrc/model/cbi/vnt2.lua"
 CONTROLLER="${ROOT_DIR}/luci-app-vnt2web/luasrc/controller/vnt2.lua"
@@ -108,7 +107,7 @@ test_web_token_support() {
 
 	grep -Fq 'generate_web_token()' "$INIT_SCRIPT" || fail "init does not generate a missing token"
 	grep -Fq 'uci -q set "${CONF}.${cfg}.web_token=${token}"' "$INIT_SCRIPT" || fail "init does not persist a generated token"
-	grep -Fq 'procd_set_param command /bin/sh -c "exec \"${web_bin}\" --addr \"${web_addr}\" --conf \"${WEB_CONF_FILE}\" --token \"${web_token}\"' \
+	grep -Fq 'procd_set_param command /bin/sh -c "exec \"${web_bin}\" --addr \"${web_addr}\" --token \"${web_token}\"' \
 		"$INIT_SCRIPT" || fail "init does not pass the token to vnt2_web"
 	grep -Fq '*[!0-9A-Za-z._~-]*' "$INIT_SCRIPT" || fail "init does not reject non URL-safe token characters"
 	grep -Fq '${#token}" -eq 6' "$INIT_SCRIPT" || fail "init does not enforce a 6-character token"
@@ -123,31 +122,38 @@ test_web_token_support() {
 test_worker_package_lifecycle() {
 	grep -Fq 'START=98' "$WORKER_INIT_SCRIPT" || fail "worker does not start before the main service"
 	grep -Fq 'START=96' "$UPLOAD_WORKER_INIT_SCRIPT" || fail "upload worker does not start before the restart worker"
-	grep -Fq 'START=97' "$VERSION_WORKER_INIT_SCRIPT" || fail "version worker does not start before the restart worker"
+	grep -Fq 'START=97' "$PREVIEW_WORKER_INIT_SCRIPT" || fail "preview worker does not start before the main service"
+	grep -Fq 'PROG="/usr/libexec/vnt2/preview-worker"' "$PREVIEW_WORKER_INIT_SCRIPT" || fail "preview worker init path is incorrect"
+	grep -Fq 'VNT2_PREVIEW_MIN_INTERVAL:-3600' "$PREVIEW_WORKER_SCRIPT" || fail "preview worker query interval is not bounded"
+	grep -Fq 'refresh_preview_version' "$PREVIEW_WORKER_SCRIPT" || fail "preview worker does not use the display-only refresh command"
 	grep -Fq 'START=99' "$INIT_SCRIPT" || fail "main service start priority changed unexpectedly"
 	grep -Fq 'RESTART_DELAY="${VNT2_RESTART_DELAY:-15}"' "$WORKER_SCRIPT" || fail "worker debounce is not 15 seconds"
-	grep -Fq 'CHECK_DELAY="${VNT2_VERSION_DELAY:-2}"' "$VERSION_WORKER_SCRIPT" || fail "version worker debounce is not 2 seconds"
-	grep -Fq '"$CHECK_COMMAND" refresh_latest_versions </dev/null >/dev/null 2>&1' "$VERSION_WORKER_SCRIPT" || \
-		fail "version worker does not detach and invoke the refresh command"
+	grep -Fq 'VNT2_FIXED_REPO="vnt-dev/vnt"' "$INIT_SCRIPT" || fail "automatic download repository is not fixed"
+	grep -Fq 'VNT2_FIXED_VERSION="2.0.10"' "$INIT_SCRIPT" || fail "automatic download version is not fixed to 2.0.10"
+	grep -Fq 'download_tag="$VNT2_FIXED_VERSION"' "$INIT_SCRIPT" || fail "download ignores the fixed binary version"
+	grep -Fq 'download_repo="$VNT2_FIXED_REPO"' "$INIT_SCRIPT" || fail "download ignores the fixed binary repository"
+	if grep -Fq 'config_get download_tag' "$INIT_SCRIPT" || grep -Fq 'config_get download_repo' "$INIT_SCRIPT"; then
+		fail "legacy UCI release fields can still override the fixed binary"
+	fi
+	if grep -Fq '/releases/latest' "$INIT_SCRIPT"; then
+		fail "automatic download still checks the latest release"
+	fi
 
 	for path in \
 		'/etc/init.d/vnt2' \
 		'/etc/init.d/vnt2-upload-worker' \
 		'/etc/init.d/vnt2-worker' \
-		'/etc/init.d/vnt2-version-worker' \
+		'/etc/init.d/vnt2-preview-worker' \
 		'/usr/libexec/vnt2/restart-worker' \
 		'/usr/libexec/vnt2/upload-worker' \
-		'/usr/libexec/vnt2/version-worker' \
-		'/usr/libexec/vnt2/cleanup-default-instance'
+		'/usr/libexec/vnt2/preview-worker'
 	do
 		grep -Fq "$path" "$PACKAGE_MAKEFILE" || fail "package lifecycle omits $path"
 	done
-	grep -Fq 'DEFAULT_INSTANCE_CLEANUP="/usr/libexec/vnt2/cleanup-default-instance"' "$INIT_SCRIPT" || \
-		fail "main service does not reference the default-instance cleanup helper"
-	grep -Fq '"${DEFAULT_INSTANCE_CLEANUP}" "127.0.0.1" "${web_port}" "${web_token}"' "$INIT_SCRIPT" || \
-		fail "main service does not schedule compatibility cleanup after Web startup"
-	grep -Fq '\"status\":\"stopped\"' "$DEFAULT_INSTANCE_CLEANUP" || \
-		fail "cleanup helper does not limit removal to stopped instances"
+	[ ! -e "${ROOT_DIR}/luci-app-vnt2web/root/usr/libexec/vnt2/cleanup-default-instance" ] || \
+		fail "obsolete default-instance cleanup helper is still packaged"
+	grep -Fq '"$${IPKG_INSTROOT}/usr/libexec/vnt2/cleanup-default-instance"' "$PACKAGE_MAKEFILE" || \
+		fail "postinst does not remove the obsolete default-instance cleanup helper"
 	grep -Fq '/etc/init.d/vnt2 schedule_restart' "$PACKAGE_MAKEFILE" || \
 		fail "package postinst does not queue a main service restart after installation"
 	grep -Fq '/etc/init.d/vnt2-worker enable' "$PACKAGE_MAKEFILE" || fail "postinst does not enable the worker"
@@ -158,74 +164,53 @@ test_worker_package_lifecycle() {
 	grep -Fq '/etc/init.d/vnt2-upload-worker restart' "$PACKAGE_MAKEFILE" || fail "postinst does not start the upload worker"
 	grep -Fq '/etc/init.d/vnt2-upload-worker stop' "$PACKAGE_MAKEFILE" || fail "prerm does not stop the upload worker"
 	grep -Fq '/etc/init.d/vnt2-upload-worker disable' "$PACKAGE_MAKEFILE" || fail "prerm does not disable the upload worker"
-	grep -Fq '/etc/init.d/vnt2-version-worker enable' "$PACKAGE_MAKEFILE" || fail "postinst does not enable the version worker"
-	grep -Fq '/etc/init.d/vnt2-version-worker restart' "$PACKAGE_MAKEFILE" || fail "postinst does not start the version worker"
+	grep -Fq '/etc/init.d/vnt2-preview-worker enable' "$PACKAGE_MAKEFILE" || fail "postinst does not enable the preview worker"
+	grep -Fq '/etc/init.d/vnt2-preview-worker restart' "$PACKAGE_MAKEFILE" || fail "postinst does not start the preview worker"
+	grep -Fq '/etc/init.d/vnt2-preview-worker stop' "$PACKAGE_MAKEFILE" || fail "prerm does not stop the preview worker"
+	grep -Fq '/etc/init.d/vnt2-preview-worker disable' "$PACKAGE_MAKEFILE" || fail "prerm does not disable the preview worker"
 	grep -Fq '/etc/init.d/vnt2-version-worker stop' "$PACKAGE_MAKEFILE" || fail "prerm does not stop the version worker"
 	grep -Fq '/etc/init.d/vnt2-version-worker disable' "$PACKAGE_MAKEFILE" || fail "prerm does not disable the version worker"
+	grep -Fq '"$${IPKG_INSTROOT}/etc/init.d/vnt2-version-worker"' "$PACKAGE_MAKEFILE" || \
+		fail "postinst does not remove the obsolete version worker from upgrades"
+	grep -Fq '"$${IPKG_INSTROOT}/usr/libexec/vnt2/version-worker"' "$PACKAGE_MAKEFILE" || \
+		fail "postinst does not remove the obsolete version worker executable"
+	grep -Fq 'vnt2_latest_v3_' "$PACKAGE_MAKEFILE" || fail "postinst does not remove obsolete latest-version cache files"
 
-	printf 'PASS: package installs and manages all workers\n'
+	[ ! -e "${ROOT_DIR}/luci-app-vnt2web/root/etc/init.d/vnt2-version-worker" ] || \
+		fail "obsolete version worker init script is still packaged"
+	[ ! -e "${ROOT_DIR}/luci-app-vnt2web/root/usr/libexec/vnt2/version-worker" ] || \
+		fail "obsolete version worker is still packaged"
+	printf 'PASS: package installs two workers and removes the legacy version worker on upgrade\n'
 }
 
-test_default_instance_cleanup_behavior() {
-	dir="$(mktemp -d)"
-	trap 'rm -rf "$dir"' EXIT INT TERM
-	real_path="$PATH"
-
-	cat >"$dir/curl" <<'EOF'
-#!/bin/sh
-args="$*"
-case "$args" in
-	*'/api/instances'*)
-		cat "$MOCK_INSTANCES"
-	;;
-	*'/api/start/status?'*)
-		cat "$MOCK_STATUS"
-	;;
-	*'-X DELETE'*'/api/instance?'*)
-		printf '%s\n' "$args" >>"$MOCK_CALLS"
-		printf '%s\n' '{"code":0,"msg":"success","data":null}'
-	;;
-	*)
-		exit 1
-	;;
-esac
-EOF
-	chmod 0755 "$dir/curl"
-
-	MOCK_INSTANCES="$dir/instances.json"
-	MOCK_STATUS="$dir/status.json"
-	MOCK_CALLS="$dir/calls"
-	export MOCK_INSTANCES MOCK_STATUS MOCK_CALLS
-
-	cat >"$MOCK_INSTANCES" <<'EOF'
-{
-  "code": 0,
-  "data": [{ "status": "stopped", "file_name": "vnt2web.toml" }]
-}
-EOF
-	cat >"$MOCK_STATUS" <<'EOF'
-{ "code": 0, "data": { "logs": [], "status": "stopped" } }
-EOF
-	PATH="$dir:$real_path" VNT2_CLEANUP_ATTEMPTS=1 VNT2_CLEANUP_DELAY=0 \
-		sh "$DEFAULT_INSTANCE_CLEANUP" 127.0.0.1 19099 abc123 vnt2web.toml
-	[ "$(wc -l <"$MOCK_CALLS" | tr -d ' ')" -eq 1 ] || \
-		fail "stopped default instance was not dismissed exactly once"
-
-	: >"$MOCK_CALLS"
-	printf '%s\n' '{"code":0,"data":{"status":"running","logs":[]}}' >"$MOCK_STATUS"
-	PATH="$dir:$real_path" VNT2_CLEANUP_ATTEMPTS=1 VNT2_CLEANUP_DELAY=0 \
-		sh "$DEFAULT_INSTANCE_CLEANUP" 127.0.0.1 19099 abc123 vnt2web.toml
-	[ ! -s "$MOCK_CALLS" ] || fail "running default instance was dismissed"
-
-	: >"$MOCK_CALLS"
-	printf '%s\n' '{"code":0,"data":[{"file_name":"vnt2web-extra.toml","status":"stopped"}]}' >"$MOCK_INSTANCES"
-	PATH="$dir:$real_path" VNT2_CLEANUP_ATTEMPTS=1 VNT2_CLEANUP_DELAY=0 \
-		sh "$DEFAULT_INSTANCE_CLEANUP" 127.0.0.1 19099 abc123 vnt2web.toml
-	[ ! -s "$MOCK_CALLS" ] || fail "an unrelated instance was dismissed"
-
-	rm -rf "$dir"
-	trap - EXIT INT TERM
-	printf 'PASS: compatibility cleanup only dismisses a stopped default instance\n'
+test_local_version_sidecar() {
+	grep -Fq 'local VERSION_STATE_FILE = "/etc/config/vnt2-web.version"' "$CONTROLLER" || \
+		fail "controller does not read the installed-version sidecar"
+	grep -Fq 'local function parse_version_state(path)' "$CONTROLLER" || \
+		fail "controller does not parse the installed-version sidecar"
+	grep -Fq 'local function get_local_tag(bin_path)' "$CONTROLLER" || \
+		fail "controller does not validate the local binary version"
+	grep -Fq 'state.path ~= bin_path' "$CONTROLLER" || \
+		fail "local version is not checked against the configured binary path"
+	grep -Fq 'stat_value_matches(stat.size, state.size)' "$CONTROLLER" || \
+		fail "local version sidecar does not validate binary size"
+	grep -Fq 'stat_value_matches(stat.mtime, state.mtime)' "$CONTROLLER" || \
+		fail "local version sidecar does not validate binary modification time"
+	grep -Fq 'VERSION_STATE_FILE="/etc/config/vnt2-web.version"' "$INIT_SCRIPT" || \
+		fail "init script does not define the installed-version sidecar"
+	grep -Fq 'write_version_state()' "$INIT_SCRIPT" || \
+		fail "init script does not write the installed-version sidecar"
+	grep -Fq 'clear_version_state()' "$INIT_SCRIPT" || \
+		fail "init script does not clear stale local version state"
+	grep -Fq 'fixed_binary_state_matches()' "$INIT_SCRIPT" || \
+		fail "init script does not validate the fixed binary sidecar"
+	grep -Fq 'installed ${scope} binary is not the fixed version ${VNT2_FIXED_VERSION}' "$INIT_SCRIPT" || \
+		fail "old plugin-managed binaries are silently reused"
+	grep -Fq 'fixed-version download failed, fallback to installed binary' "$INIT_SCRIPT" || \
+		fail "fixed-version download fallback is not logged"
+	grep -Fq 'write_version_state "$release_tag" "download"' "$INIT_SCRIPT" || \
+		fail "successful fixed-version downloads do not update local version state"
+	printf 'PASS: local version is validated against its installed binary sidecar\n'
 }
 
 test_apply_stop_keeps_network() {
@@ -260,7 +245,6 @@ test_start_service_propagates_component_failure() {
 	ensure_log_files() { :; }
 	log_web() { :; }
 	log_download() { :; }
-	export_toml_from_uci() { return 0; }
 	config_load() { :; }
 	get_first_section_id() { printf '%s\n' "$1"; }
 	start_web_instance() { return 1; }
@@ -332,22 +316,22 @@ test_idempotent_uci_helpers() {
 	printf 'PASS: unchanged UCI state produces no write\n'
 }
 
-test_private_toml_permissions() {
-	grep -Fq 'M.TOML_FILE = "/etc/config/vnt2web.toml"' "${ROOT_DIR}/luci-app-vnt2web/luasrc/model/vnt2_toml.lua" || \
-		fail "Lua TOML path is not fixed to /etc/config/vnt2web.toml"
-	grep -Fq 'WEB_CONF_DEFAULT="/etc/config/vnt2web.toml"' "$INIT_SCRIPT" || \
-		fail "init TOML path is not fixed to /etc/config/vnt2web.toml"
+test_web_config_directory_and_empty_default() {
+	grep -Fq 'WEB_CONFIG_DIR="/vnt_config"' "$INIT_SCRIPT" || \
+		fail "Web config directory is not fixed to /vnt_config"
+	grep -Fq 'WEB_CURRENT_CONFIG_RECORD="${WEB_CONFIG_DIR}/.vnt_current_config.txt"' "$INIT_SCRIPT" || \
+		fail "running config record is not kept in /vnt_config"
 	grep -Fq 'translate("Web配置文件路径")' "$CBI_SCRIPT" || \
 		fail "LuCI does not display the Web configuration path label"
 	grep -Fq 'return "/vnt_config/*.toml"' "$CBI_SCRIPT" || \
 		fail "LuCI does not display /vnt_config/*.toml"
-	if grep -Fq '/etc/config/vnt2.toml' "$INIT_SCRIPT" "${ROOT_DIR}/luci-app-vnt2web/luasrc/model/vnt2_toml.lua" "$CBI_SCRIPT"; then
+	if grep -Fq '/etc/config/vnt2.toml' "$INIT_SCRIPT" "$CBI_SCRIPT"; then
 		fail "legacy runtime TOML path remains in plugin source"
 	fi
-	if grep -Fq '/etc/config/vnts2.toml' "$INIT_SCRIPT" "${ROOT_DIR}/luci-app-vnt2web/luasrc/model/vnt2_toml.lua" "$CBI_SCRIPT"; then
+	if grep -Fq '/etc/config/vnts2.toml' "$INIT_SCRIPT" "$CBI_SCRIPT"; then
 		fail "server TOML path must not be managed by the client plugin"
 	fi
-	if grep -Fq 'web_conf_file' "$INIT_SCRIPT" "${ROOT_DIR}/luci-app-vnt2web/root/etc/config/vnt2" "${ROOT_DIR}/luci-app-vnt2web/luasrc/model/vnt2_toml.lua"; then
+	if grep -Fq 'web_conf_file' "$INIT_SCRIPT" "${ROOT_DIR}/luci-app-vnt2web/root/etc/config/vnt2"; then
 		fail "runtime TOML path is still configurable through UCI"
 	fi
 	grep -Fq 'DummyValue, "_web_conf_path"' "$CBI_SCRIPT" || \
@@ -355,37 +339,20 @@ test_private_toml_permissions() {
 	if grep -Fq 'Value, "web_conf_file"' "$CBI_SCRIPT"; then
 		fail "LuCI TOML path remains editable"
 	fi
-	grep -Fq 'chmod 755 "$conf_dir"' "$INIT_SCRIPT" || fail "TOML parent directory is not restricted to 0755"
-	grep -Fq 'chmod 600 "$conf_path"' "$INIT_SCRIPT" || fail "existing TOML files are not restricted to 0600"
-	grep -Fq 'fs.chmod(dir, "0755")' "${ROOT_DIR}/luci-app-vnt2web/luasrc/model/vnt2_toml.lua" || \
-		fail "Lua TOML parent permissions are not 0755"
-	grep -Fq 'return nil, "failed to create TOML parent directory"' "${ROOT_DIR}/luci-app-vnt2web/luasrc/model/vnt2_toml.lua" || \
-		fail "Lua TOML parent creation failures are not propagated"
-	grep -Fq 'return nil, "failed to secure TOML parent directory"' "${ROOT_DIR}/luci-app-vnt2web/luasrc/model/vnt2_toml.lua" || \
-		fail "Lua TOML parent permission failures are not propagated"
-	grep -Fq 'fs.chmod(temp, "0600")' "${ROOT_DIR}/luci-app-vnt2web/luasrc/model/vnt2_toml.lua" || \
-		fail "Lua TOML file permissions are not 0600"
-	grep -Fq 'local function secure_existing_toml(path)' "${ROOT_DIR}/luci-app-vnt2web/luasrc/model/vnt2_toml.lua" || \
-		fail "existing TOML files do not have a permission repair helper"
-	grep -Fq 'fs.chmod(path, "0600")' "${ROOT_DIR}/luci-app-vnt2web/luasrc/model/vnt2_toml.lua" || \
-		fail "existing TOML file permissions are not repaired to 0600"
-	grep -Fq 'return secure_existing_toml(M.TOML_FILE)' "${ROOT_DIR}/luci-app-vnt2web/luasrc/model/vnt2_toml.lua" || \
-		fail "existing TOML permissions are not repaired"
-	grep -Fq 'The default TOML is also editable from the Web multi-config page' "${ROOT_DIR}/luci-app-vnt2web/luasrc/model/vnt2_toml.lua" || \
-		fail "existing default TOML would be overwritten during service start"
-	grep -Fq 'os.rename(temp, path)' "${ROOT_DIR}/luci-app-vnt2web/luasrc/model/vnt2_toml.lua" || \
-		fail "Lua TOML writes are not atomically replaced"
-	grep -Fq 'local exported = toml.export_uci_to_toml(uci)' "$INIT_SCRIPT" || \
-		fail "init script does not inspect the TOML export result"
-	grep -Fq 'if not exported then' "$INIT_SCRIPT" || \
-		fail "init script does not report TOML export failures"
-	grep -Fq 'mkdir -p "$conf_dir" >/dev/null 2>&1 || return 1' "$INIT_SCRIPT" || \
-		fail "runtime config directory creation failures are ignored"
-	grep -Fq 'chmod 600 "$conf_path" >/dev/null 2>&1 || return 1' "$INIT_SCRIPT" || \
-		fail "runtime config permission failures are ignored"
-	grep -Fq 'if ! ensure_conf_path_ready "${WEB_CONF_FILE}"; then' "$INIT_SCRIPT" || \
-		fail "Web runtime ignores config path preparation failures"
-	printf 'PASS: TOML files use private permissions and atomic replacement\n'
+	grep -Fq 'mkdir -p "${WEB_CONFIG_DIR}"' "$INIT_SCRIPT" || fail "Web config directory is not created"
+	grep -Fq 'chmod 700 "${WEB_CONFIG_DIR}"' "$INIT_SCRIPT" || fail "Web config directory is not private"
+	grep -Fq 'VNT_CONFIG_DIR="${WEB_CONFIG_DIR}"' "$INIT_SCRIPT" || fail "vnt2_web does not receive its config directory"
+	grep -Fq 'VNT_CURRENT_CONFIG_RECORD="${WEB_CURRENT_CONFIG_RECORD}"' "$INIT_SCRIPT" || fail "vnt2_web does not receive its running config record path"
+	if grep -Fq -- '--conf' "$INIT_SCRIPT"; then
+		fail "OpenWrt Web service still starts a default TOML through --conf"
+	fi
+	if grep -Fq 'toml.ensure_toml_file(uci)' "$CONTROLLER" "$CBI_SCRIPT"; then
+		fail "opening LuCI still creates the default vnt2web.toml"
+	fi
+	if grep -Fq 'export_toml_from_uci' "$INIT_SCRIPT"; then
+		fail "service startup still exports a default vnt2web.toml"
+	fi
+	printf 'PASS: Web starts with an empty /vnt_config and no default TOML\n'
 }
 
 test_status_view_escaping() {
@@ -443,11 +410,11 @@ test_reload_only_queues_marker
 test_luci_general_tab_omits_removed_controls
 test_web_token_support
 test_worker_package_lifecycle
-test_default_instance_cleanup_behavior
+test_local_version_sidecar
 test_apply_stop_keeps_network
 test_start_service_propagates_component_failure
 test_idempotent_uci_helpers
-test_private_toml_permissions
+test_web_config_directory_and_empty_default
 test_status_view_escaping
 test_uploaded_archive_safety
 test_upload_is_deferred_to_worker

@@ -21,7 +21,7 @@ read_request_time() {
 	printf '%s\n' "$request_time"
 }
 
-claim_latest_request() {
+claim_restart_request() {
 	[ -f "$PENDING_FILE" ] || return 1
 	mv -f "$PENDING_FILE" "$CLAIMED_FILE" 2>/dev/null
 }
@@ -44,7 +44,7 @@ trap 'exit 0' INT TERM
 
 while :; do
 	if [ ! -f "$CLAIMED_FILE" ]; then
-		claim_latest_request || {
+		claim_restart_request || {
 			sleep "$POLL_INTERVAL"
 			continue
 		}
@@ -60,7 +60,7 @@ while :; do
 
 	# A newer marker replaces the claimed request and restarts the debounce
 	# window. This coalesces repeated Save & Apply and reload events.
-	if claim_latest_request; then
+	if claim_restart_request; then
 		continue
 	fi
 

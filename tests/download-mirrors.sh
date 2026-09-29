@@ -56,7 +56,7 @@ test_custom_url_handling() {
 	load_function normalize_custom_mirror_url
 	load_function get_download_url_candidates_for_mirror
 
-	raw_url="https://github.com/vnt-dev/vnt/releases/download/v2.0.8/file.zip"
+	raw_url="https://github.com/vnt-dev/vnt/releases/download/v2.0.10/file.zip"
 	normalized="$(normalize_custom_mirror_url ' https://gh-proxy.com ')"
 	assert_equal "https://gh-proxy.com/" "$normalized" "custom mirror normalization failed"
 
@@ -100,112 +100,82 @@ test_release_tag_matching() {
 
 	cat >"$dir/releases.json" <<'EOF'
 [
-  {"tag_name":"v2.0.53","assets":[{"name":"current"}]},
-  {"tag_name":"2.0.52","assets":[{"name":"previous"}]}
+	  {"tag_name":"v2.0.10","assets":[{"name":"fixed"}]},
+	  {"tag_name":"2.0.9","assets":[{"name":"previous"}]}
 ]
 EOF
-	extract_release_object_by_tag "$dir/releases.json" "$dir/matched.json" "2.0.53" || \
+	extract_release_object_by_tag "$dir/releases.json" "$dir/matched.json" "2.0.10" || \
 		fail "normalized tag did not match a v-prefixed release"
-	grep -Fq '"tag_name":"v2.0.53"' "$dir/matched.json" || fail "wrong release object was selected"
+	grep -Fq '"tag_name":"v2.0.10"' "$dir/matched.json" || fail "wrong release object was selected"
 
-	extract_release_object_by_tag "$dir/releases.json" "$dir/matched.json" "v2.0.52" || \
-		fail "v-prefixed requested tag did not match a normalized release"
-	grep -Fq '"tag_name":"2.0.52"' "$dir/matched.json" || fail "wrong normalized release object was selected"
+	extract_release_object_by_tag "$dir/releases.json" "$dir/matched.json" "v2.0.9" || \
+		fail "v-prefixed requested tag did not match its exact release"
+	grep -Fq '"tag_name":"2.0.9"' "$dir/matched.json" || fail "wrong normalized release object was selected"
 
-	if extract_release_object_by_tag "$dir/releases.json" "$dir/matched.json" "2.0.5"; then
+	if extract_release_object_by_tag "$dir/releases.json" "$dir/matched.json" "2.0.1"; then
 		fail "partial release tag matched unexpectedly"
 	fi
 
 	rm -rf "$dir"
 	trap - EXIT INT TERM
-	printf 'PASS: release list tag matching normalizes only the v prefix\n'
+	printf 'PASS: release metadata matching requires an exact normalized tag\n'
 }
 
-test_latest_release_endpoint_selection() {
+test_fixed_release_endpoint_selection() {
 	load_function trim_value
 	load_function normalize_release_tag
-	load_function resolve_v2_release_tag
-	load_function normalize_release_query_mode
-	load_function get_release_query_modes
 	load_function normalize_download_mirror
 	load_function repo_to_mirror_project
 	load_function get_download_mirror_candidates
 	load_function select_download_mirror
 	load_function get_release_api_candidates
+	load_function get_release_asset_name_candidates
+	load_function get_release_asset_url
+	VNT2_FIXED_REPO="vnt-dev/vnt"
+	VNT2_FIXED_VERSION="2.0.10"
 
-	# A `latest` request must resolve to the official stable Latest only.
-	# Pre-releases are never selected automatically.
-	latest_modes="$(get_release_query_modes latest)"
-	assert_equal "stable" "$latest_modes" \
-		"latest no longer resolves to the stable channel only"
-
-	stable_candidates="$(get_release_api_candidates vnt-dev/vnt latest gh-proxy stable)"
-	assert_equal "https://api.github.com/repos/vnt-dev/vnt/releases/latest" "$stable_candidates" \
-		"latest no longer uses the official stable latest endpoint"
-
-	legacy_candidates="$(get_release_api_candidates vnt-dev/vnt latest gh-proxy)"
-	assert_equal "$stable_candidates" "$legacy_candidates" \
-		"a bare latest request no longer defaults to the stable channel"
-
-	# Mirrors whose release lists mislabel pre-releases or omit the
-	# `prerelease` field must never resolve `latest`, even when the caller
-	# passes that mirror explicitly.
-	for unsafe_mirror in gitee gitlab cloudflare; do
-		unsafe_candidates="$(get_release_api_candidates vnt-dev/vnt latest "$unsafe_mirror" stable)"
-		assert_equal "https://api.github.com/repos/vnt-dev/vnt/releases/latest" "$unsafe_candidates" \
-			"${unsafe_mirror} no longer falls back to the official stable endpoint"
-	done
-
-	# The pre-release-inclusive Releases list must not be used to resolve
-	# `latest` any more.
-	for stable_mirror in github gh-proxy custom; do
-		stable_only="$(get_release_api_candidates vnt-dev/vnt latest "$stable_mirror" stable)"
-		assert_equal "https://api.github.com/repos/vnt-dev/vnt/releases/latest" "$stable_only" \
-			"${stable_mirror} latest query no longer uses the stable-only endpoint"
-	done
-	if grep -Fq 'api.github.com/repos/${repo}/releases"' "$INIT_SCRIPT"; then
-		fail "init script still resolves latest from the pre-release-inclusive Releases list"
-	fi
-
-	fixed_modes="$(get_release_query_modes v2.0.9)"
-	assert_equal "fixed" "$fixed_modes" "a fixed tag no longer uses the fixed channel"
-
-	fixed_candidates="$(get_release_api_candidates vnt-dev/vnt v2.0.9 github)"
+	fixed_candidates="$(get_release_api_candidates vnt-dev/vnt 2.0.10 github)"
 	assert_equal "$(printf '%s\n' \
-		"https://api.github.com/repos/vnt-dev/vnt/releases/tags/2.0.9" \
-		"https://api.github.com/repos/vnt-dev/vnt/releases/tags/v2.0.9")" \
-		"$fixed_candidates" "fixed tag still resolves through the tag endpoints"
-	printf 'PASS: latest resolves to the official stable release only\n'
-}
-
-test_release_query_mirror_filtering() {
-	load_function trim_value
-	load_function normalize_download_mirror
-	load_function get_download_mirror_candidates
-	load_function get_release_query_mirror_candidates
-
-	# `latest` may only be resolved from sources that serve GitHub's own
-	# stable metadata. Hand-synced mirrors are skipped entirely.
-	auto_latest="$(get_release_query_mirror_candidates vnt-dev/vnt auto latest)"
-	assert_equal "$(printf '%s\n' gh-proxy github)" "$auto_latest" \
-		"automatic latest filtering no longer keeps only GitHub-backed mirrors"
-
-	custom_latest="$(get_release_query_mirror_candidates vnt-dev/vnt custom latest)"
-	assert_equal "$(printf '%s\n' custom github)" "$custom_latest" \
-		"custom latest filtering dropped the custom or GitHub source"
-
-	for unsafe_mirror in gitee gitlab cloudflare; do
-		unsafe_latest="$(get_release_query_mirror_candidates vnt-dev/vnt "$unsafe_mirror" latest)"
-		assert_equal "github" "$unsafe_latest" \
-			"${unsafe_mirror} latest filtering no longer narrows to GitHub"
+		"https://api.github.com/repos/vnt-dev/vnt/releases/tags/2.0.10" \
+		"https://api.github.com/repos/vnt-dev/vnt/releases/tags/v2.0.10")" \
+		"$fixed_candidates" \
+		"fixed binary version does not resolve through exact tag endpoints"
+	assert_equal "$fixed_candidates" "$(get_release_api_candidates vnt-dev/vnt v2.0.10 gh-proxy)" \
+		"v2.0.10 does not normalize to the fixed release"
+	for invalid_tag in latest 2.0.9 2.0.100; do
+		if get_release_api_candidates vnt-dev/vnt "$invalid_tag" github >/dev/null; then
+			fail "unexpected release tag was accepted: ${invalid_tag}"
+		fi
 	done
-
-	# A fixed tag keeps the full configured mirror order, because any mirror
-	# that carries the requested tag is safe to use.
-	fixed_candidates="$(get_release_query_mirror_candidates vnt-dev/vnt auto v2.0.8)"
-	assert_equal "$(printf '%s\n' gh-proxy github gitee gitlab cloudflare)" "$fixed_candidates" \
-		"fixed tag filtering removed usable mirrors"
-	printf 'PASS: latest queries only trust GitHub-backed release metadata\n'
+	if get_release_api_candidates another/repo 2.0.10 github >/dev/null; then
+		fail "unexpected repository was accepted"
+	fi
+	assert_equal "vnt2-x86_64-unknown-linux-musl-v2.0.10.zip" \
+		"$(get_release_asset_name_candidates web 2.0.10 x86_64)" \
+		"fixed release asset name changed"
+	if get_release_asset_name_candidates web 2.0.9 x86_64 >/dev/null; then
+		fail "asset name helper accepted a non-fixed version"
+	fi
+	assert_equal "https://github.com/vnt-dev/vnt/releases/download/v2.0.10/vnt2-x86_64-unknown-linux-musl-v2.0.10.zip" \
+		"$(get_release_asset_url vnt-dev/vnt web 2.0.10 x86_64)" \
+		"fixed release fallback URL changed"
+	if get_release_asset_url another/repo web 2.0.10 x86_64 >/dev/null; then
+		fail "asset URL helper accepted an unexpected repository"
+	fi
+	if grep -Fq '/releases/latest' "$INIT_SCRIPT"; then
+		fail "init script still requests a latest release"
+	fi
+	assert_equal "$(printf '%s\n' gh-proxy github gitee gitlab cloudflare)" \
+		"$(get_download_mirror_candidates vnt-dev/vnt auto)" \
+		"fixed-version mirror fallback order changed"
+	grep -Fq 'e.web_target_tag = FIXED_VNT2_VERSION' "${ROOT_DIR}/luci-app-vnt2web/luasrc/controller/vnt2.lua" || \
+		fail "status endpoint does not report the fixed target version"
+	grep -Fq 'FIXED_VNT2_VERSION = "2.0.10"' "${ROOT_DIR}/luci-app-vnt2web/luasrc/controller/vnt2.lua" || \
+		fail "status target version is not fixed to 2.0.10"
+	grep -Fq '<td>目标版本</td><td id="web_target_tag">-</td>' \
+		"${ROOT_DIR}/luci-app-vnt2web/luasrc/view/vnt2/vnt2_status.htm" || \
+		fail "status page does not label the fixed version as the target version"
+	printf 'PASS: automatic downloads accept only vnt-dev/vnt 2.0.10\n'
 }
 
 test_elf_header_detection() {
@@ -314,8 +284,7 @@ test_mirror_candidates
 test_custom_url_handling
 test_defaults_and_retry_limits
 test_release_tag_matching
-test_latest_release_endpoint_selection
-test_release_query_mirror_filtering
+test_fixed_release_endpoint_selection
 test_elf_header_detection
 test_download_timeouts_and_archive_checks
 test_archive_safety

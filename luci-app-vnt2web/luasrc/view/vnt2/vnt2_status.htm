@@ -1,7 +1,7 @@
 <%
 local dsp = require "luci.dispatcher"
 local status_url = dsp.build_url("admin", "vpn", "vnt2", "status")
-local check_latest_url = dsp.build_url("admin", "vpn", "vnt2", "check_latest")
+local check_preview_url = dsp.build_url("admin", "vpn", "vnt2", "check_preview")
 %>
 
 <style type="text/css">
@@ -91,7 +91,8 @@ local check_latest_url = dsp.build_url("admin", "vpn", "vnt2", "check_latest")
 			</h3>
 			<table>
 				<tr><td>本地版本</td><td id="web_tag">-</td></tr>
-				<tr><td>最新版本</td><td id="web_latest_tag">-</td></tr>
+				<tr><td>目标版本</td><td id="web_target_tag">-</td></tr>
+				<tr><td>最新预览版</td><td id="web_preview_tag">-</td></tr>
 				<tr><td>运行时长</td><td id="web_runtime">-</td></tr>
 				<tr><td>进程/PID</td><td id="web_pid">-</td></tr>
 				<tr><td>CPU / 内存</td><td id="web_usage">-</td></tr>
@@ -107,7 +108,7 @@ local check_latest_url = dsp.build_url("admin", "vpn", "vnt2", "check_latest")
 //<![CDATA[
 (function() {
 	var statusUrl = "<%=status_url%>";
-	var checkLatestUrl = "<%=check_latest_url%>";
+	var checkPreviewUrl = "<%=check_preview_url%>";
 
 	function byId(id) {
 		return document.getElementById(id);
@@ -167,7 +168,8 @@ local check_latest_url = dsp.build_url("admin", "vpn", "vnt2", "check_latest")
 		setBadge("web_status_badge", data.web_running);
 
 		setHtml("web_tag", text(data.web_tag));
-		setHtml("web_latest_tag", text(data.latest_web_tag));
+		setHtml("web_target_tag", text(data.web_target_tag));
+		setHtml("web_preview_tag", data.web_preview_tag ? text(data.web_preview_tag) : "未查询");
 		setHtml("web_runtime", text(data.web_runtime));
 		setHtml("web_pid", data.web_running ? ("PID " + text(data.web_pid)) : "未运行");
 		setHtml("web_usage", [text(data.web_cpu, "0"), text(data.web_ram, "0 MB")].join(" / "));
@@ -184,7 +186,7 @@ local check_latest_url = dsp.build_url("admin", "vpn", "vnt2", "check_latest")
 		});
 	}
 
-	XHR.get(checkLatestUrl, null, function() {
+	XHR.get(checkPreviewUrl, null, function() {
 		updateStatus();
 	});
 	updateStatus();

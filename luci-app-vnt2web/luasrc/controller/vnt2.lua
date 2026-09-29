@@ -4,25 +4,24 @@ local fs = require "nixio.fs"
 local sys = require "luci.sys"
 local http = require "luci.http"
 local uci = require "luci.model.uci".cursor()
-local toml = require "luci.model.vnt2_toml"
 local textutil = require "luci.model.vnt2_text"
 local LOG_DISPLAY_LINES = 300
-local VERSION_CHECK_PENDING_FILE = "/tmp/vnt2-version-check.pending"
 local VERSION_STATE_FILE = "/etc/config/vnt2-web.version"
+local PREVIEW_STATE_FILE = "/tmp/vnt2-preview.state"
+local PREVIEW_PENDING_FILE = "/tmp/vnt2-preview-check.pending"
+local FIXED_VNT2_VERSION = "2.0.10"
 
 function index()
-	if not fs.access("/etc/config/vnt2") and not fs.access(toml.TOML_FILE) then
+	if not fs.access("/etc/config/vnt2") then
 		return
 	end
-
-	toml.ensure_toml_file(uci)
 
 	entry({ "admin", "vpn", "vnt2" }, alias("admin", "vpn", "vnt2", "config"), _("VNT2_WEB"), 45).dependent = true
 	entry({ "admin", "vpn", "vnt2", "config" }, cbi("vnt2"), _("基本设置"), 10).leaf = true
 	entry({ "admin", "vpn", "vnt2", "runtime_log" }, cbi("vnt2_runtime_log"), _("运行日志"), 30).leaf = true
 
 	entry({ "admin", "vpn", "vnt2", "status" }, call("act_status")).leaf = true
-	entry({ "admin", "vpn", "vnt2", "check_latest" }, call("act_check_latest")).leaf = true
+	entry({ "admin", "vpn", "vnt2", "check_preview" }, call("act_check_preview")).leaf = true
 	entry({ "admin", "vpn", "vnt2", "get_runtime_log" }, call("get_runtime_log")).leaf = true
 	entry({ "admin", "vpn", "vnt2", "clear_runtime_log" }, call("clear_runtime_log")).leaf = true
 end
@@ -39,6 +38,20 @@ end
 local function json_write(data)
 	http.prepare_content("application/json")
 	http.write_json(data)
+end
+
+function act_check_preview()
+	local stat = fs.readfile("/proc/self/stat") or ""
+	local pid = stat:match("^(%d+)") or tostring(os.time())
+	local temp = string.format("%s.%s", PREVIEW_PENDING_FILE, pid)
+	local ok = fs.writefile(temp, tostring(os.time()) .. "\n")
+	if ok then
+		ok = os.rename(temp, PREVIEW_PENDING_FILE) and true or false
+	end
+	if not ok then
+		fs.remove(temp)
+	end
+	json_write({ ok = ok and true or false })
 end
 
 local function plain_write(data)
@@ -313,98 +326,6 @@ local function get_local_tag(bin_path)
 	return state.tag:gsub("^[vV]", "")
 end
 
-local function sanitize_cache_name(s)
-	return tostring(s or ""):gsub("[^%w%._-]", "_")
-end
-
-local function normalize_download_mirror(mirror)
-	mirror = trim(mirror):lower()
-	if mirror == "gh-proxy" or mirror == "ghproxy" or mirror == "proxy" then
-		return "gh-proxy"
-	end
-	if mirror == "" or mirror == "auto" or mirror == "cn" or mirror == "china" or mirror == "domestic" then
-		return "auto"
-	end
-	if mirror == "github" then
-		return mirror
-	end
-	if mirror == "gitee" or mirror == "gitlab" or mirror == "cloudflare" or mirror == "custom" then
-		return mirror
-	end
-	return "auto"
-end
-
-local function normalize_custom_mirror_url(url)
-	url = trim(url)
-	if url == "" or not url:match("^https?://[^%s]+/?$") then
-		return ""
-	end
-	return (url:gsub("/*$", "/"))
-end
-
-local function get_cached_latest_tag(repo, mirror, custom_mirror_url)
-	repo = trim(repo)
-	if repo == "" then
-		repo = "vnt-dev/vnt"
-	end
-
-	local strategy = normalize_download_mirror(mirror)
-	local canonical_key = strategy .. "_" .. repo
-	if strategy == "custom" then
-		canonical_key = canonical_key .. "_" .. normalize_custom_mirror_url(custom_mirror_url)
-	end
-	local canonical_cache = "/tmp/vnt2_latest_v3_" .. sanitize_cache_name(canonical_key) .. ".tag"
-	if fs.access(canonical_cache) then
-		local cached = trim(fs.readfile(canonical_cache) or "")
-		if cached ~= "" then
-			return cached
-		end
-	end
-
-	return ""
-end
-
-local function normalize_display_tag(tag)
-	tag = trim(tag)
-	if tag == "" then
-		return ""
-	end
-	tag = tag:gsub("^[vV]", "")
-	return tag
-end
-
-local function get_vnt2_latest_tag(repo, mirror, custom_mirror_url)
-	repo = trim(repo)
-
-	if repo == "" then
-		repo = "vnt-dev/vnt"
-	end
-
-	local latest = normalize_display_tag(get_cached_latest_tag(repo, mirror, custom_mirror_url))
-	if latest ~= "" then
-		return latest
-	end
-
-	return ""
-end
-
-function act_check_latest()
-	local stat = fs.readfile("/proc/self/stat") or ""
-	local pid = stat:match("^(%d+)") or tostring(os.time())
-	local temp = string.format("%s.%s", VERSION_CHECK_PENDING_FILE, pid)
-	local value = tostring(os.time()) .. "\n"
-	local ok = fs.writefile(temp, value)
-
-	if ok then
-		ok = os.rename(temp, VERSION_CHECK_PENDING_FILE) and true or false
-	end
-	if not ok then
-		fs.remove(temp)
-	end
-
-	json_write({ ok = ok and true or false })
-end
-
 local function get_log_content(path, max_lines)
 	return textutil.read_log_file(path, max_lines)
 end
@@ -440,6 +361,21 @@ local function parse_state_file(path)
 	out.path = textutil.sanitize_text(out.path)
 	out.time = textutil.sanitize_text(out.time)
 
+	return out
+end
+
+local function parse_preview_state(path)
+	local out = { state = "", tag = "", checked = "" }
+	local content = fs.readfile(path)
+	if not content or content == "" then
+		return out
+	end
+	for line in content:gmatch("[^\r\n]+") do
+		local k, v = line:match("^([%w_]+)=(.*)$")
+		if k and out[k] ~= nil then
+			out[k] = trim(v)
+		end
+	end
 	return out
 end
 
@@ -491,27 +427,13 @@ end
 
 
 
-local function summarize_web_config()
-	return {
-		host = get_web_host(),
-		port = get_web_port(),
-		wan = uci_first("vnt2_web", "web_wan", "1"),
-		auto_download = uci_first("vnt2_web", "auto_download", "1"),
-		download_repo = uci_first("vnt2_web", "download_repo", "vnt-dev/vnt"),
-		download_tag = uci_first("vnt2_web", "download_tag", "latest"),
-		download_mirror = uci_first("vnt2_web", "download_mirror", "auto"),
-		custom_download_mirror = uci_first("vnt2_web", "custom_download_mirror", "")
-	}
-end
-
-
 function act_status()
 	local e = {}
 	local web_enabled = uci_first("vnt2_web", "enabled", "0") == "1"
 
 	local web_pid = get_web_pid()
-	local web_cfg = summarize_web_config()
 	local web_dl = parse_state_file("/tmp/vnt2-download-web.state")
+	local preview = parse_preview_state(PREVIEW_STATE_FILE)
 
 	-- This endpoint is polled every five seconds. Keep it local-only so an
 	-- unavailable process cannot hold the LuCI request open during apply.
@@ -524,7 +446,10 @@ function act_status()
 	-- Never execute managed binaries from this polling endpoint. A broken or
 	-- blocked binary must not delay LuCI while an apply-triggered restart runs.
 	e.web_tag = get_local_tag(get_web_bin())
-	e.latest_web_tag = get_vnt2_latest_tag(web_cfg.download_repo, web_cfg.download_mirror, web_cfg.custom_download_mirror)
+	e.web_target_tag = FIXED_VNT2_VERSION
+	e.web_preview_tag = preview.tag
+	e.web_preview_state = preview.state
+	e.web_preview_checked = preview.checked
 
 	e.web_host = get_web_host()
 	e.web_port = get_web_port()

@@ -60,10 +60,32 @@ check_project_contracts() {
 		fail "package version is not 2.0.54"
 	grep -Fq 'PKG_RELEASE:=1' "$SOURCE_DIR/Makefile" ||
 		fail "package release is not 1"
-	grep -Fq 'WEB_CONF_DEFAULT="/etc/config/vnt2web.toml"' "$SOURCE_DIR/root/etc/init.d/vnt2" ||
-		fail "runtime TOML path is not fixed in the init script"
-	grep -Fq 'M.TOML_FILE = "/etc/config/vnt2web.toml"' "$SOURCE_DIR/luasrc/model/vnt2_toml.lua" ||
-		fail "runtime TOML path is not fixed in the Lua TOML module"
+	grep -Fq 'VNT2_FIXED_REPO="vnt-dev/vnt"' "$SOURCE_DIR/root/etc/init.d/vnt2" ||
+		fail "automatic download repository is not fixed to vnt-dev/vnt"
+	grep -Fq 'VNT2_FIXED_VERSION="2.0.10"' "$SOURCE_DIR/root/etc/init.d/vnt2" ||
+		fail "automatic download version is not fixed to 2.0.10"
+	grep -Fq 'url="https://api.github.com/repos/${VNT2_FIXED_REPO}/releases?per_page=30"' "$SOURCE_DIR/root/etc/init.d/vnt2" ||
+		fail "preview lookup does not use the GitHub release list"
+	grep -Fq 'PREVIEW_STATE_FILE="/tmp/vnt2-preview.state"' "$SOURCE_DIR/root/etc/init.d/vnt2" ||
+		fail "preview lookup state file is missing"
+	grep -Fq 'web_preview_tag' "$SOURCE_DIR/luasrc/controller/vnt2.lua" "$SOURCE_DIR/luasrc/view/vnt2/vnt2_status.htm" ||
+		fail "status page does not expose the latest preview version"
+	grep -Fq 'VNT2_PREVIEW_MIN_INTERVAL:-3600' "$SOURCE_DIR/root/usr/libexec/vnt2/preview-worker" ||
+		fail "preview lookup worker interval is not bounded"
+	if grep -Fq '/releases/latest' "$SOURCE_DIR/root/etc/init.d/vnt2" "$SOURCE_DIR/luasrc/controller/vnt2.lua" "$SOURCE_DIR/luasrc/view/vnt2/vnt2_status.htm"; then
+		fail "automatic version lookup still uses the latest release endpoint"
+	fi
+	if grep -Eq 'option download_(tag|repo)' "$SOURCE_DIR/root/etc/config/vnt2"; then
+		fail "default UCI config still exposes a configurable release tag or repository"
+	fi
+	[ ! -e "$SOURCE_DIR/root/etc/init.d/vnt2-version-worker" ] ||
+		fail "obsolete version worker init script is still packaged"
+	[ ! -e "$SOURCE_DIR/root/usr/libexec/vnt2/version-worker" ] ||
+		fail "obsolete version worker is still packaged"
+	grep -Fq 'WEB_CONFIG_DIR="/vnt_config"' "$SOURCE_DIR/root/etc/init.d/vnt2" ||
+		fail "Web config directory is not fixed to /vnt_config"
+	grep -Fq 'WEB_CURRENT_CONFIG_RECORD="${WEB_CONFIG_DIR}/.vnt_current_config.txt"' "$SOURCE_DIR/root/etc/init.d/vnt2" ||
+		fail "running config record is not kept in /vnt_config"
 	grep -Fq 'translate("Web配置文件路径")' "$SOURCE_DIR/luasrc/model/cbi/vnt2.lua" ||
 		fail "LuCI does not display the Web configuration path label"
 	grep -Fq 'return "/vnt_config/*.toml"' "$SOURCE_DIR/luasrc/model/cbi/vnt2.lua" ||
@@ -82,29 +104,38 @@ check_project_contracts() {
 	fi
 	grep -Fq 'option web_token' "$SOURCE_DIR/root/etc/config/vnt2" ||
 		fail "default config does not define web_token"
-	grep -Fq 'procd_set_param command /bin/sh -c "exec \"${web_bin}\" --addr \"${web_addr}\" --conf \"${WEB_CONF_FILE}\" --token \"${web_token}\"' \
+	grep -Fq 'procd_set_param command /bin/sh -c "exec \"${web_bin}\" --addr \"${web_addr}\" --token \"${web_token}\"' \
 		"$SOURCE_DIR/root/etc/init.d/vnt2" ||
 		fail "init script does not pass web_token to vnt2_web"
+	if grep -Fq -- '--conf' "$SOURCE_DIR/root/etc/init.d/vnt2"; then
+		fail "OpenWrt Web service still starts a default TOML through --conf"
+	fi
+	if grep -Fq 'toml.ensure_toml_file(uci)' "$SOURCE_DIR/luasrc/controller/vnt2.lua" "$SOURCE_DIR/luasrc/model/cbi/vnt2.lua"; then
+		fail "opening LuCI still creates the default vnt2web.toml"
+	fi
 	if grep -Fq 'web_conf_file' \
 		"$SOURCE_DIR/root/etc/config/vnt2" \
-		"$SOURCE_DIR/root/etc/init.d/vnt2" \
-		"$SOURCE_DIR/luasrc/model/vnt2_toml.lua"; then
+		"$SOURCE_DIR/root/etc/init.d/vnt2"; then
 		fail "runtime TOML path remains configurable through UCI"
 	fi
+	[ ! -e "$SOURCE_DIR/luasrc/model/vnt2_toml.lua" ] ||
+		fail "obsolete default TOML conversion module is still packaged"
 	for executable in \
 		"$SOURCE_DIR/root/etc/init.d/vnt2" \
 		"$SOURCE_DIR/root/etc/init.d/vnt2-upload-worker" \
 		"$SOURCE_DIR/root/etc/init.d/vnt2-worker" \
-		"$SOURCE_DIR/root/etc/init.d/vnt2-version-worker" \
-		"$SOURCE_DIR/root/usr/libexec/vnt2/cleanup-default-instance" \
+		"$SOURCE_DIR/root/etc/init.d/vnt2-preview-worker" \
 		"$SOURCE_DIR/root/usr/libexec/vnt2/restart-worker" \
 		"$SOURCE_DIR/root/usr/libexec/vnt2/upload-worker" \
-		"$SOURCE_DIR/root/usr/libexec/vnt2/version-worker"
+		"$SOURCE_DIR/root/usr/libexec/vnt2/preview-worker"
 	do
 		test -x "$executable" || fail "package executable is not marked executable: $executable"
 		if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-			git ls-files -s -- "$executable" | grep -Eq '^100755 ' ||
-				fail "package executable is not executable in the Git index: $executable"
+			indexed_path="$(git ls-files -- "$executable")"
+			if [ -n "$indexed_path" ]; then
+				git ls-files -s -- "$executable" | grep -Eq '^100755 ' ||
+					fail "package executable is not executable in the Git index: $executable"
+			fi
 		fi
 	done
 
@@ -158,7 +189,7 @@ check_project_contracts() {
 		fail "signed APK is not verified before publishing"
 	grep -Fq 'cp public-key.pem "package/${PACKAGE_NAME}/root/etc/apk/keys/${PACKAGE_NAME}.pem"' "$workflow" ||
 		fail "APK package does not install its public key for future upgrades"
-	printf 'PASS: package identity, fixed TOML path, and removed-component checks passed\n'
+	printf 'PASS: package identity, fixed binary version, fixed TOML path, and removed-component checks passed\n'
 }
 
 check_line_endings() {

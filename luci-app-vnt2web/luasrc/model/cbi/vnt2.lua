@@ -3,13 +3,10 @@ local fs = require "nixio.fs"
 local nixio = require "nixio"
 local util = require "luci.util"
 local uci = require "luci.model.uci".cursor()
-local toml = require "luci.model.vnt2_toml"
 
 local UPLOAD_DIR = "/etc/vnt2/upload"
 local UPLOAD_PENDING_FILE = "/etc/vnt2/upload.pending"
 local MAX_UPLOAD_SIZE = 256 * 1024 * 1024
-
-toml.ensure_toml_file(uci)
 
 local m = Map("vnt2")
 

@@ -12,7 +12,7 @@ PKG_RELEASE:=1
 
 LUCI_TITLE:=luci-app-vnt2web - LuCI support for VNT2 Web
 LUCI_DESCRIPTION:=luci-app-vnt2web OpenWrt LuCI application for managing the VNT2 Web client
-LUCI_DEPENDS:=+luci-base +luci-compat +kmod-tun +curl +ca-bundle +unzip
+LUCI_DEPENDS:=+luci-base +luci-compat +kmod-tun +curl +ca-bundle +unzip +jsonfilter
 LUCI_PKGARCH:=all
 
 define Package/$(PKG_NAME)/conffiles
@@ -29,6 +29,10 @@ if [ -z "$${IPKG_INSTROOT}" ] && [ -x /etc/init.d/vnt2-worker ] ; then
   /etc/init.d/vnt2-worker stop >/dev/null 2>&1
   /etc/init.d/vnt2-worker disable >/dev/null 2>&1
 fi
+if [ -z "$${IPKG_INSTROOT}" ] && [ -x /etc/init.d/vnt2-preview-worker ] ; then
+  /etc/init.d/vnt2-preview-worker stop >/dev/null 2>&1
+  /etc/init.d/vnt2-preview-worker disable >/dev/null 2>&1
+fi
 if [ -z "$${IPKG_INSTROOT}" ] && [ -x /etc/init.d/vnt2-version-worker ] ; then
   /etc/init.d/vnt2-version-worker stop >/dev/null 2>&1
   /etc/init.d/vnt2-version-worker disable >/dev/null 2>&1
@@ -42,15 +46,25 @@ endef
 
 define Package/$(PKG_NAME)/postinst
 #!/bin/sh
+rm -f \
+  "$${IPKG_INSTROOT}/etc/init.d/vnt2-version-worker" \
+  "$${IPKG_INSTROOT}/usr/libexec/vnt2/version-worker" \
+  "$${IPKG_INSTROOT}/usr/libexec/vnt2/cleanup-default-instance" \
+  "$${IPKG_INSTROOT}/tmp/vnt2-version-check.pending" \
+  "$${IPKG_INSTROOT}/tmp/vnt2-version-check.claimed"
+rm -f \
+  "$${IPKG_INSTROOT}/tmp/vnt2-preview-check.pending" \
+  "$${IPKG_INSTROOT}/tmp/vnt2-preview-check.claimed" \
+  "$${IPKG_INSTROOT}/tmp/vnt2-preview.state"
+rm -f "$${IPKG_INSTROOT}"/tmp/vnt2_latest_v2_*.tag "$${IPKG_INSTROOT}"/tmp/vnt2_latest_v3_*.tag
 chmod 0755 \
   "$${IPKG_INSTROOT}/etc/init.d/vnt2" \
   "$${IPKG_INSTROOT}/etc/init.d/vnt2-upload-worker" \
   "$${IPKG_INSTROOT}/etc/init.d/vnt2-worker" \
-  "$${IPKG_INSTROOT}/etc/init.d/vnt2-version-worker" \
+  "$${IPKG_INSTROOT}/etc/init.d/vnt2-preview-worker" \
   "$${IPKG_INSTROOT}/usr/libexec/vnt2/restart-worker" \
   "$${IPKG_INSTROOT}/usr/libexec/vnt2/upload-worker" \
-  "$${IPKG_INSTROOT}/usr/libexec/vnt2/version-worker" \
-  "$${IPKG_INSTROOT}/usr/libexec/vnt2/cleanup-default-instance" >/dev/null 2>&1
+  "$${IPKG_INSTROOT}/usr/libexec/vnt2/preview-worker" >/dev/null 2>&1
 if [ -f /tmp/vnt2_backup ] ; then
   echo "发现 vnt2 备份配置文件 /tmp/vnt2_backup，开始恢复到 /etc/config/vnt2"
   mv -f /tmp/vnt2_backup /etc/config/vnt2
@@ -62,8 +76,8 @@ if [ -z "$${IPKG_INSTROOT}" ] ; then
   /etc/init.d/vnt2-upload-worker restart >/dev/null 2>&1
   /etc/init.d/vnt2-worker enable >/dev/null 2>&1
   /etc/init.d/vnt2-worker restart >/dev/null 2>&1
-  /etc/init.d/vnt2-version-worker enable >/dev/null 2>&1
-  /etc/init.d/vnt2-version-worker restart >/dev/null 2>&1
+  /etc/init.d/vnt2-preview-worker enable >/dev/null 2>&1
+  /etc/init.d/vnt2-preview-worker restart >/dev/null 2>&1
   /etc/init.d/vnt2 schedule_restart >/dev/null 2>&1
 fi
 endef

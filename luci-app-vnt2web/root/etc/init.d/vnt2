@@ -2,8 +2,8 @@
 
 START=99
 USE_PROCD=1
-EXTRA_COMMANDS="schedule_restart refresh_latest_versions"
-EXTRA_HELP="\tschedule_restart\tQueue a restart for the vnt2 worker\n\trefresh_latest_versions\tRefresh cached latest release versions"
+EXTRA_COMMANDS="schedule_restart refresh_preview_version"
+EXTRA_HELP="\tschedule_restart\tQueue a restart for the vnt2 worker\n\trefresh_preview_version\tCheck latest prerelease for display only"
 
 CONF="vnt2"
 
@@ -12,20 +12,20 @@ DOWNLOAD_LOG="/tmp/vnt2-download.log"
 
 WEB_TIME="/tmp/vnt2_web_time"
 
-WEB_CONF_DEFAULT="/etc/config/vnt2web.toml"
-
-WEB_CONF_FILE=""
+WEB_CONFIG_DIR="/vnt_config"
+WEB_CURRENT_CONFIG_RECORD="${WEB_CONFIG_DIR}/.vnt_current_config.txt"
 
 DOWNLOAD_CACHE_BASE="/tmp/vnt2-download-cache"
 DOWNLOAD_WEB_STATE="/tmp/vnt2-download-web.state"
 VERSION_STATE_FILE="/etc/config/vnt2-web.version"
+PREVIEW_STATE_FILE="/tmp/vnt2-preview.state"
+VNT2_FIXED_REPO="vnt-dev/vnt"
+VNT2_FIXED_VERSION="2.0.10"
 GH_PROXY_PREFIX="https://gh-proxy.com/"
 DOWNLOAD_MIRROR_RETRIES=3
 RESTART_PENDING_FILE="/tmp/vnt2-restart.pending"
 
 INSTALL_BIN_DIR="/usr/bin"
-DEFAULT_INSTANCE_CLEANUP="/usr/libexec/vnt2/cleanup-default-instance"
-
 . /lib/functions.sh
 . /lib/functions/procd.sh
 
@@ -248,6 +248,42 @@ clear_version_state() {
 	rm -f "$VERSION_STATE_FILE" "$VERSION_STATE_FILE".* >/dev/null 2>&1
 }
 
+read_version_state_value() {
+	local key="$1"
+
+	[ -f "$VERSION_STATE_FILE" ] || return 1
+	sed -n "s/^${key}=//p" "$VERSION_STATE_FILE" | head -n1
+}
+
+get_version_state_tag() {
+	local tag
+
+	tag="$(read_version_state_value tag)"
+	[ -n "$tag" ] || return 1
+	normalize_release_tag "$tag"
+}
+
+version_state_matches_binary() {
+	local path="$1"
+	local state_path state_mtime state_size actual_mtime actual_size
+
+	state_path="$(read_version_state_value path)"
+	state_mtime="$(read_version_state_value mtime)"
+	state_size="$(read_version_state_value size)"
+	[ "$state_path" = "$path" ] || return 1
+	[ -n "$state_mtime" ] && [ -n "$state_size" ] || return 1
+	actual_mtime="$(file_mtime "$path")" || return 1
+	actual_size="$(file_size "$path")" || return 1
+	[ "$actual_mtime" = "$state_mtime" ] && [ "$actual_size" = "$state_size" ]
+}
+
+fixed_binary_state_matches() {
+	local path="$1"
+
+	[ "$(get_version_state_tag 2>/dev/null)" = "$VNT2_FIXED_VERSION" ] || return 1
+	version_state_matches_binary "$path"
+}
+
 ensure_exec() {
 	local bin="$1"
 	[ -n "$bin" ] || return 1
@@ -274,23 +310,6 @@ ensure_elf_exec() {
 
 	ensure_exec "$bin" || return 1
 	is_elf_binary "$bin"
-}
-
-export_toml_from_uci() {
-	lua - <<'EOF' >/dev/null 2>&1
-package.path = package.path .. ";/usr/lib/lua/?.lua;/usr/lib/lua/?/init.lua"
-package.cpath = package.cpath .. ";/usr/lib/lua/?.so;/usr/lib/lua/loadall.so"
-local ok_uci, uci_mod = pcall(require, "luci.model.uci")
-local ok_toml, toml = pcall(require, "luci.model.vnt2_toml")
-if not ok_uci or not ok_toml then
-	os.exit(1)
-end
-local uci = uci_mod.cursor()
-local exported = toml.export_uci_to_toml(uci)
-if not exported then
-	os.exit(1)
-end
-EOF
 }
 
 detect_arch_name() {
@@ -547,64 +566,60 @@ normalize_release_tag() {
 	echo "$tag"
 }
 
-resolve_v2_release_tag() {
-	local repo="$1"
-	local tag="$2"
+select_preview_release() {
+	local json_file="$1"
+	local i=0 tag prerelease draft published
+	local entries=""
 
-	[ -n "$repo" ] || repo="vnt-dev/vnt"
-	tag="$(trim_value "$tag")"
-
-	case "$repo" in
-		vnt-dev/vnt)
-			if [ -z "$tag" ] || [ "$tag" = "latest" ]; then
-				echo "$tag"
-			else
-				normalize_release_tag "$tag"
-			fi
-		;;
-		*)
-			if [ -n "$tag" ] && [ "$tag" != "latest" ]; then
-				normalize_release_tag "$tag"
-			else
-				echo "$tag"
-			fi
-		;;
-	esac
+	command -v jsonfilter >/dev/null 2>&1 || return 1
+	while [ "$i" -lt 30 ]; do
+		tag="$(jsonfilter -i "$json_file" -e "@[$i].tag_name" 2>/dev/null)"
+		[ -n "$tag" ] || break
+		prerelease="$(jsonfilter -i "$json_file" -e "@[$i].prerelease" 2>/dev/null)"
+		draft="$(jsonfilter -i "$json_file" -e "@[$i].draft" 2>/dev/null)"
+		published="$(jsonfilter -i "$json_file" -e "@[$i].published_at" 2>/dev/null)"
+		tag="$(normalize_release_tag "$tag")"
+		case "$tag" in
+			""|*[!A-Za-z0-9._+-]*) ;;
+			*)
+				if [ "$prerelease" = "true" ] && [ "$draft" = "false" ] && [ -n "$published" ]; then
+					entries="${entries}${published} ${tag}
+"
+				fi
+			;;
+		esac
+		i=$((i + 1))
+	done
+	[ -n "$entries" ] || return 1
+	printf '%s' "$entries" | sort -r | head -n1 | awk '{print $2}'
 }
 
-normalize_release_query_mode() {
-	local mode="$1"
-	local tag="$2"
+refresh_preview_version() {
+	local json_file="${PREVIEW_STATE_FILE}.$$.json"
+	local tmp="${PREVIEW_STATE_FILE}.$$" tag="" state="failed" url
+	local mirror cfg
 
-	mode="$(trim_value "$mode")"
-	case "$mode" in
-		stable|fixed)
-			echo "$mode"
-			return 0
-		;;
-	esac
-
-	case "$tag" in
-		''|latest) echo "stable" ;;
-		*) echo "fixed" ;;
-	esac
-}
-
-get_release_query_modes() {
-	local tag="$1"
-
-	tag="$(trim_value "$tag")"
-	case "$tag" in
-		''|latest)
-			# `latest` always means the official stable Latest, which GitHub
-			# derives from /releases/latest and which excludes pre-releases
-			# and drafts. There is no pre-release tier.
-			printf '%s\n' "stable"
-		;;
-		*)
-			printf '%s\n' "fixed"
-		;;
-	esac
+	config_load "$CONF"
+	cfg="$(get_first_section_id vnt2_web)"
+	config_get mirror "$cfg" download_mirror auto
+	# Display-only lookup: never feed this tag into the fixed binary downloader.
+	url="https://api.github.com/repos/${VNT2_FIXED_REPO}/releases?per_page=30"
+	if download_file "$url" "$json_file" api github ""; then
+		tag="$(select_preview_release "$json_file")"
+	fi
+	if [ -z "$tag" ] && [ "$(normalize_download_mirror "$mirror")" != github ]; then
+		if download_file "$url" "$json_file" api gh-proxy ""; then
+			tag="$(select_preview_release "$json_file")"
+		fi
+	fi
+	rm -f "$json_file"
+	[ -z "$tag" ] || state="ok"
+	if (umask 077; printf 'state=%s\ntag=%s\nchecked=%s\n' "$state" "$tag" "$(date +%s)" >"$tmp") && mv -f "$tmp" "$PREVIEW_STATE_FILE"; then
+		[ "$state" = ok ] && return 0
+		return 1
+	fi
+	rm -f "$tmp"
+	return 1
 }
 
 normalize_download_mirror() {
@@ -690,29 +705,6 @@ get_download_mirror_candidates() {
 	esac
 }
 
-get_release_query_mirror_candidates() {
-	local repo="$1"
-	local mirror="$2"
-	local tag="$3"
-	local candidate
-
-	for candidate in $(get_download_mirror_candidates "$repo" "$mirror"); do
-		case "$tag" in
-			''|latest)
-				# Gitee, GitLab and Cloudflare keep hand-synced release
-				# lists that cannot identify the official stable Latest:
-				# Gitee marks pre-releases as stable and the other two omit
-				# the `prerelease` field entirely. Only sources that serve
-				# GitHub's own metadata may resolve `latest`.
-				case "$candidate" in
-					gitee|gitlab|cloudflare) continue ;;
-				esac
-			;;
-		esac
-		printf '%s\n' "$candidate"
-	done
-}
-
 get_download_mirror_cache_key() {
 	local repo="$1"
 	local mirror="$2"
@@ -746,123 +738,16 @@ get_download_mirror_cache_key() {
 	esac
 }
 
-write_latest_release_cache() {
-	local strategy="$1"
-	local candidate="$2"
-	local repo="$3"
-	local custom_mirror_url="$4"
-	local tag="$5"
-	local cache_scope="$6"
-	local effective_mirror cache_key cache_file cache_tmp canonical_key canonical_file canonical_tmp
-
-	strategy="$(normalize_download_mirror "$strategy")"
-	effective_mirror="$(normalize_download_mirror "$candidate")"
-	tag="$(normalize_release_tag "$tag")"
-	[ -n "$tag" ] || return 0
-	[ "$cache_scope" = "latest" ] || return 0
-
-	case "$effective_mirror" in
-		gitee|gitlab|cloudflare)
-			repo_to_mirror_project "$repo" >/dev/null 2>&1 || effective_mirror="github"
-		;;
-	esac
-
-	cache_key="${strategy}_${effective_mirror}_${repo}"
-	if [ "$effective_mirror" = "custom" ]; then
-		custom_mirror_url="$(normalize_custom_mirror_url "$custom_mirror_url")"
-		cache_key="${cache_key}_${custom_mirror_url}"
-	fi
-	cache_file="/tmp/vnt2_latest_v2_$(sanitize_name "$cache_key").tag"
-	cache_tmp="${cache_file}.tmp.$$"
-	if ! printf '%s\n' "$tag" >"$cache_tmp" || ! mv -f "$cache_tmp" "$cache_file"; then
-		rm -f "$cache_tmp"
-	fi
-
-	canonical_key="${strategy}_${repo}"
-	if [ "$strategy" = "custom" ]; then
-		canonical_key="${canonical_key}_${custom_mirror_url}"
-	fi
-	canonical_file="/tmp/vnt2_latest_v3_$(sanitize_name "$canonical_key").tag"
-	canonical_tmp="${canonical_file}.tmp.$$"
-	if ! printf '%s\n' "$tag" >"$canonical_tmp" || ! mv -f "$canonical_tmp" "$canonical_file"; then
-		rm -f "$canonical_tmp"
-	fi
-	return 0
-}
-
-refresh_latest_version_for_section() {
-	local cfg="$1"
-	local default_repo="$2"
-	local scope="$3"
-	local repo mirror custom_mirror_url candidate attempt retry_limit query_dir json_file api_url release_tag
-
-	[ -n "$cfg" ] || return 1
-	config_get repo "$cfg" "download_repo" "$default_repo"
-	config_get mirror "$cfg" "download_mirror" "auto"
-	config_get custom_mirror_url "$cfg" "custom_download_mirror" ""
-	[ -n "$repo" ] || repo="$default_repo"
-	mirror="$(normalize_download_mirror "$mirror")"
-	custom_mirror_url="$(normalize_custom_mirror_url "$custom_mirror_url")"
-	query_dir="${DOWNLOAD_CACHE_BASE}/latest_$(sanitize_name "${scope}_${mirror}_${repo}_${custom_mirror_url}")"
-	json_file="${query_dir}/release.json"
-	mkdir -p "$query_dir"
-
-	for candidate in $(get_release_query_mirror_candidates "$repo" "$mirror" "latest"); do
-		retry_limit="$DOWNLOAD_MIRROR_RETRIES"
-		[ "$candidate" = "custom" ] && retry_limit=1
-		for attempt in $(seq 1 "$retry_limit"); do
-			log_download "latest version check ${attempt}/${retry_limit} repo=${repo} mirror=${candidate} scope=${scope}"
-			api_url="$(fetch_release_metadata_from_mirror "$repo" "latest" "$json_file" "$candidate" "$custom_mirror_url")"
-			[ -n "$api_url" ] || continue
-			release_tag="$(sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$json_file" | head -n1)"
-			release_tag="$(normalize_release_tag "$release_tag")"
-			[ -n "$release_tag" ] && [ "$release_tag" != "latest" ] || continue
-			write_latest_release_cache "$mirror" "$candidate" "$repo" "$custom_mirror_url" "$release_tag" "latest"
-			log_download "latest version updated repo=${repo} tag=${release_tag} mirror=${candidate} scope=${scope}"
-			rm -f "$json_file"
-			return 0
-		done
-	done
-
-	rm -f "$json_file"
-	log_download "latest version check failed repo=${repo} strategy=${mirror} scope=${scope}"
-	return 1
-}
-
-refresh_latest_versions() {
-	local web_cfg rc=0
-
-	ensure_log_files
-	config_load "${CONF}"
-	web_cfg="$(get_first_section_id "vnt2_web")"
-
-	refresh_latest_version_for_section "$web_cfg" "vnt-dev/vnt" "web" || rc=1
-	return "$rc"
-}
-
 get_release_api_candidates() {
 	local repo="$1"
 	local tag="$2"
 	local mirror="$3"
-	local mode="${4:-}"
-	local resolved_tag normalized_tag effective_mirror project
+	local normalized_tag effective_mirror project
 
-	[ -n "$repo" ] || repo="vnt-dev/vnt"
-	resolved_tag="$(resolve_v2_release_tag "$repo" "$tag")"
-	normalized_tag="$(normalize_release_tag "$resolved_tag")"
+	[ "$repo" = "$VNT2_FIXED_REPO" ] || return 1
+	normalized_tag="$(normalize_release_tag "$tag")"
+	[ "$normalized_tag" = "$VNT2_FIXED_VERSION" ] || return 1
 	effective_mirror="$(select_download_mirror "$repo" "$mirror")"
-	mode="$(normalize_release_query_mode "$mode" "$tag")"
-
-	if [ -z "$resolved_tag" ] || [ "$resolved_tag" = "latest" ]; then
-		# `latest` means the official stable Latest only. GitHub's
-		# /releases/latest endpoint derives that channel and excludes
-		# pre-releases and drafts, whereas the hand-synced mirror release
-		# lists cannot: Gitee reports pre-releases as stable, and GitLab and
-		# Cloudflare omit the `prerelease` field entirely. Resolve `latest`
-		# through GitHub metadata only and never through a mirror list.
-		echo "https://api.github.com/repos/${repo}/releases/latest"
-		return 0
-	fi
 
 	case "$effective_mirror" in
 		gitee|gitlab|cloudflare)
@@ -884,11 +769,8 @@ get_release_api_candidates() {
 		;;
 	esac
 
-	echo "https://api.github.com/repos/${repo}/releases/tags/${resolved_tag}"
-
-	if [ -n "$normalized_tag" ]; then
-		echo "https://api.github.com/repos/${repo}/releases/tags/v${normalized_tag}"
-	fi
+	echo "https://api.github.com/repos/${repo}/releases/tags/${normalized_tag}"
+	echo "https://api.github.com/repos/${repo}/releases/tags/v${normalized_tag}"
 }
 
 extract_release_urls() {
@@ -980,14 +862,14 @@ fetch_release_metadata_from_mirror() {
 	local json_file="$3"
 	local mirror="$4"
 	local custom_mirror_url="$5"
-	local query_mode="${6:-}"
 	local api_url response_tag candidate requested_tag effective_mirror tagged_file json_root
 
+	[ "$repo" = "$VNT2_FIXED_REPO" ] || return 1
+	[ "$(normalize_release_tag "$tag")" = "$VNT2_FIXED_VERSION" ] || return 1
 	effective_mirror="$(select_download_mirror "$repo" "$mirror")"
 	requested_tag="$(normalize_release_tag "$tag")"
-	query_mode="$(normalize_release_query_mode "$query_mode" "$tag")"
 
-	for candidate in $(get_release_api_candidates "$repo" "$tag" "$effective_mirror" "$query_mode"); do
+	for candidate in $(get_release_api_candidates "$repo" "$tag" "$effective_mirror"); do
 		log_download "checking release endpoint: ${candidate}"
 		if download_file "$candidate" "$json_file" "api" "$effective_mirror" "$custom_mirror_url"; then
 			response_tag="$(sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$json_file" | head -n1)"
@@ -995,7 +877,7 @@ fetch_release_metadata_from_mirror() {
 			case "$candidate" in
 				*/releases)
 						json_root="$(sed -n 's/^[[:space:]]*\([{[]\).*/\1/p' "$json_file" | head -n1)"
-						if [ "$json_root" = "[" ] && [ -n "$requested_tag" ] && [ "$requested_tag" != "latest" ]; then
+						if [ "$json_root" = "[" ] && [ -n "$requested_tag" ]; then
 							tagged_file="${json_file}.tagged"
 							if extract_release_object_by_tag "$json_file" "$tagged_file" "$requested_tag"; then
 								mv -f "$tagged_file" "$json_file"
@@ -1010,9 +892,7 @@ fetch_release_metadata_from_mirror() {
 					fi
 				;;
 			esac
-			if [ -n "$response_tag" ] && {
-				[ -z "$requested_tag" ] || [ "$requested_tag" = "latest" ] || [ "$response_tag" = "$requested_tag" ]
-			}; then
+			if [ "$response_tag" = "$VNT2_FIXED_VERSION" ]; then
 				echo "$candidate"
 				return 0
 			fi
@@ -1029,7 +909,7 @@ get_release_asset_name_candidates() {
 	local prefix suffix
 
 	version="$(normalize_release_tag "$version")"
-	[ -n "$version" ] || return 1
+	[ "$version" = "$VNT2_FIXED_VERSION" ] || return 1
 
 	case "$scope" in
 		web)
@@ -1081,6 +961,8 @@ get_release_asset_url() {
 	local arch_name="$4"
 	local asset_name
 
+	[ "$repo" = "$VNT2_FIXED_REPO" ] || return 1
+	[ "$(normalize_release_tag "$version")" = "$VNT2_FIXED_VERSION" ] || return 1
 	asset_name="$(get_release_asset_name_candidates "$scope" "$version" "$arch_name" | head -n1)"
 	[ -n "$asset_name" ] || return 1
 	echo "https://github.com/${repo}/releases/download/v${version}/${asset_name}"
@@ -1389,7 +1271,6 @@ auto_download_bundle_for_mode() {
 	local cfg="$1"
 	local scope="$2"
 	local state_file="$3"
-	local query_mode="$4"
 
 	local auto_download download_tag download_repo download_mirror custom_mirror_url cache_mirror_key candidate_mirror api_url arch_name
 	local mirror_attempt mirror_retry_limit
@@ -1398,20 +1279,16 @@ auto_download_bundle_for_mode() {
 	local web_bin
 	asset_name=""
 
-	[ -n "$query_mode" ] || query_mode="fixed"
-
 	config_get_bool auto_download "$cfg" "auto_download" "1"
 	[ "$auto_download" = "1" ] || {
 		write_download_state "$state_file" "disabled" "auto download disabled" "" "" "" ""
-		clear_version_state
 		return 1
 	}
-	clear_version_state
 
 	case "$scope" in
 		web)
-			config_get download_tag "$cfg" "download_tag" "latest"
-			config_get download_repo "$cfg" "download_repo" "vnt-dev/vnt"
+			download_tag="$VNT2_FIXED_VERSION"
+			download_repo="$VNT2_FIXED_REPO"
 			config_get download_mirror "$cfg" "download_mirror" "auto"
 			config_get custom_mirror_url "$cfg" "custom_download_mirror" ""
 		;;
@@ -1419,39 +1296,30 @@ auto_download_bundle_for_mode() {
 			return 1
 		;;
 	esac
-	[ -n "$download_tag" ] || download_tag="latest"
-	[ -n "$download_repo" ] || download_repo="vnt-dev/vnt"
 	download_mirror="$(normalize_download_mirror "$download_mirror")"
 	custom_mirror_url="$(normalize_custom_mirror_url "$custom_mirror_url")"
 	cache_mirror_key="$(get_download_mirror_cache_key "$download_repo" "$download_mirror" "$custom_mirror_url")"
-	download_tag="$(resolve_v2_release_tag "$download_repo" "$download_tag")"
-	[ -n "$download_tag" ] || download_tag="latest"
 
 	arch_name="$(detect_arch_name)"
-	query_dir="${DOWNLOAD_CACHE_BASE}/query_$(sanitize_name "${cache_mirror_key}_${download_repo}_${download_tag}_${query_mode}_${arch_name}_${scope}")"
+	query_dir="${DOWNLOAD_CACHE_BASE}/query_$(sanitize_name "${cache_mirror_key}_${download_repo}_${download_tag}_${arch_name}_${scope}")"
 	json_file="${query_dir}/release.json"
 	mkdir -p "$query_dir"
 
-	log_download "query target release repo=${download_repo} tag=${download_tag} mode=${query_mode} arch=${arch_name} scope=${scope}"
-	for candidate_mirror in $(get_release_query_mirror_candidates "$download_repo" "$download_mirror" "$download_tag"); do
+	log_download "query fixed release repo=${download_repo} tag=${download_tag} arch=${arch_name} scope=${scope}"
+	for candidate_mirror in $(get_download_mirror_candidates "$download_repo" "$download_mirror"); do
 		mirror_retry_limit="$DOWNLOAD_MIRROR_RETRIES"
 		[ "$candidate_mirror" = "custom" ] && mirror_retry_limit=1
 		for mirror_attempt in $(seq 1 "$mirror_retry_limit"); do
 			log_download "mirror attempt ${mirror_attempt}/${mirror_retry_limit} mirror=${candidate_mirror} scope=${scope}"
 			write_download_state "$state_file" "querying" "querying releases (${candidate_mirror})" "" "$download_tag" "$arch_name" ""
-			log_download "querying ${scope} release repo=${download_repo} tag=${download_tag} mode=${query_mode} mirror=${candidate_mirror} strategy=${download_mirror} arch=${arch_name}"
-			api_url="$(fetch_release_metadata_from_mirror "$download_repo" "$download_tag" "$json_file" "$candidate_mirror" "$custom_mirror_url" "$query_mode")"
+			log_download "querying ${scope} release repo=${download_repo} tag=${download_tag} mirror=${candidate_mirror} strategy=${download_mirror} arch=${arch_name}"
+			api_url="$(fetch_release_metadata_from_mirror "$download_repo" "$download_tag" "$json_file" "$candidate_mirror" "$custom_mirror_url")"
 			if [ -z "$api_url" ]; then
-				log_download "release query failed repo=${download_repo} tag=${download_tag} mode=${query_mode} mirror=${candidate_mirror}"
+				log_download "release query failed repo=${download_repo} tag=${download_tag} mirror=${candidate_mirror}"
 				if [ "$candidate_mirror" != "github" ]; then
 					continue
 				fi
-				# Only a user-pinned tag may fall back to a constructed asset
-				# URL. `latest` is resolved exclusively from official release
-				# metadata so a transient failure must not silently install an
-				# older or hard-coded version.
-				fallback_version="$(normalize_release_tag "$download_tag")"
-				[ -n "$fallback_version" ] && [ "$fallback_version" != "latest" ] || continue
+				fallback_version="$VNT2_FIXED_VERSION"
 				fallback_url="$(get_release_asset_url "$download_repo" "$scope" "$fallback_version" "$arch_name" 2>/dev/null)"
 				if [ -z "$fallback_url" ]; then
 					continue
@@ -1466,9 +1334,8 @@ EOF
 			log_download "release query ok: ${api_url} used_url=${DOWNLOAD_LAST_URL:-unknown} mirror=${candidate_mirror}"
 			release_tag="$(sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$json_file" | head -n1)"
 			release_tag="$(normalize_release_tag "$release_tag")"
-			[ -n "$release_tag" ] || release_tag="$download_tag"
-			[ "$release_tag" != "latest" ] || {
-				log_download "release metadata did not provide a usable tag mirror=${candidate_mirror}"
+			[ "$release_tag" = "$VNT2_FIXED_VERSION" ] || {
+				log_download "release metadata tag mismatch expected=${VNT2_FIXED_VERSION} mirror=${candidate_mirror}"
 				continue
 			}
 			cache_key="$(sanitize_name "${cache_mirror_key}_${candidate_mirror}_${download_repo}_${release_tag}_${arch_name}_${scope}")"
@@ -1559,8 +1426,7 @@ EOF
 	done
 
 	write_download_state "$state_file" "failed" "all download mirrors failed" "${asset_name:-unknown}" "$download_tag" "$arch_name" ""
-	clear_version_state
-	log_download "all download mirrors failed repo=${download_repo} tag=${download_tag} mode=${query_mode} strategy=${download_mirror} arch=${arch_name} scope=${scope}"
+	log_download "all download mirrors failed repo=${download_repo} tag=${download_tag} strategy=${download_mirror} arch=${arch_name} scope=${scope}"
 	return 1
 }
 
@@ -1568,28 +1434,15 @@ auto_download_bundle() {
 	local cfg="$1"
 	local scope="$2"
 	local state_file="$3"
-	local download_tag query_mode
 	local auto_download
 
 	config_get_bool auto_download "$cfg" "auto_download" "1"
 	[ "$auto_download" = "1" ] || {
 		write_download_state "$state_file" "disabled" "auto download disabled" "" "" "" ""
-		clear_version_state
 		return 1
 	}
 
-	config_get download_tag "$cfg" "download_tag" "latest"
-	[ -n "$download_tag" ] || download_tag="latest"
-
-	# A fixed tag is honoured as-is. `latest` resolves to the official stable
-	# Latest only, so there is exactly one query mode per download request.
-	for query_mode in $(get_release_query_modes "$download_tag"); do
-		if auto_download_bundle_for_mode "$cfg" "$scope" "$state_file" "$query_mode"; then
-			return 0
-		fi
-	done
-
-	return 1
+	auto_download_bundle_for_mode "$cfg" "$scope" "$state_file"
 }
 
 prepare_binary() {
@@ -1600,14 +1453,24 @@ prepare_binary() {
 	local state_file="$5"
 	local scope="$6"
 
-	local bin
+	local bin managed_binary_needs_update=0 auto_download
 	config_get bin "$cfg" "$option" "$default_path"
 
 	case "$scope" in
 		web)
 			if ensure_elf_exec "$bin"; then
-				echo "$bin"
-				return 0
+				if fixed_binary_state_matches "$bin"; then
+					echo "$bin"
+					return 0
+				fi
+				config_get_bool auto_download "$cfg" "auto_download" "1"
+				if [ "$auto_download" = "1" ]; then
+					managed_binary_needs_update=1
+					log_download "installed ${scope} binary is not the fixed version ${VNT2_FIXED_VERSION}, attempting replacement"
+				else
+					echo "$bin"
+					return 0
+				fi
 			fi
 		;;
 		*)
@@ -1629,9 +1492,12 @@ prepare_binary() {
 	# already installed upload instead of reading stale files from /tmp.
 	config_get bin "$cfg" "$option" "$default_path"
 	if ensure_elf_exec "$bin"; then
-		log_download "${scope} auto download failed, fallback to installed binary ${bin}"
-		clear_version_state
-		write_download_state "$state_file" "fallback" "auto download failed, using previously uploaded binary" "$(basename "$bin")" "" "$(detect_arch_name)" "$bin"
+		if [ "$managed_binary_needs_update" = "1" ]; then
+			log_download "${scope} fixed-version download failed, fallback to installed binary ${bin}"
+		else
+			log_download "${scope} auto download failed, fallback to installed binary ${bin}"
+		fi
+		write_download_state "$state_file" "fallback" "fixed-version download failed, using installed binary" "$(basename "$bin")" "" "$(detect_arch_name)" "$bin"
 		echo "$bin"
 		return 0
 	fi
@@ -2008,45 +1874,27 @@ start_web_instance() {
 		return 1
 	}
 
-	WEB_CONF_FILE="${WEB_CONF_DEFAULT}"
-	if ! ensure_conf_path_ready "${WEB_CONF_FILE}"; then
-		log_web "client config path is not writable: ${WEB_CONF_FILE}"
+	if ! mkdir -p "${WEB_CONFIG_DIR}" >/dev/null 2>&1; then
+		log_web "failed to create Web config directory: ${WEB_CONFIG_DIR}"
 		return 1
 	fi
-	if ! toml_validate_client_config "${WEB_CONF_FILE}"; then
-		log_web 'start failed: client TOML validation failed'
+	if ! chmod 700 "${WEB_CONFIG_DIR}" >/dev/null 2>&1; then
+		log_web "failed to secure Web config directory: ${WEB_CONFIG_DIR}"
 		return 1
-	fi
-
-	if ! prepare_client_network_runtime "$cfg" "${WEB_CONF_FILE}"; then
-		log_web 'start failed: client network runtime preparation failed'
-		return 1
-	fi
-
-	if [ "${VNT2_DEVICE_MODE}" = "no" ]; then
-		cleanup_network
-	else
-		configure_network "${VNT2_TUN_NAME}" "${VNT2_FORWARD_LIST}" "${VNT2_NO_NAT}"
 	fi
 
 	configure_web_firewall "$web_host" "$web_port" "$web_wan"
-	log_web "using ${web_bin} on ${web_addr}, conf=${WEB_CONF_FILE}"
+	log_web "using ${web_bin} on ${web_addr}, configs=${WEB_CONFIG_DIR}/*.toml"
 	procd_open_instance "vnt2_web"
-	procd_set_param env RUST_LOG="$log_level"
-	procd_set_param command /bin/sh -c "exec \"${web_bin}\" --addr \"${web_addr}\" --conf \"${WEB_CONF_FILE}\" --token \"${web_token}\" >>\"${WEB_LOG}\" 2>&1"
+	procd_set_param env RUST_LOG="$log_level" VNT_CONFIG_DIR="${WEB_CONFIG_DIR}" VNT_CURRENT_CONFIG_RECORD="${WEB_CURRENT_CONFIG_RECORD}"
+	procd_set_param command /bin/sh -c "exec \"${web_bin}\" --addr \"${web_addr}\" --token \"${web_token}\" >>\"${WEB_LOG}\" 2>&1"
 	procd_set_param stdout 0
 	procd_set_param stderr 0
 	procd_set_param respawn
-	procd_set_param file "${WEB_CONF_FILE}"
 	procd_set_param limits core="unlimited"
 	procd_set_param limits nofile="1048576 1048576"
 	procd_set_param term_timeout 10
 	procd_close_instance
-	# Compatibility for downloaded releases that still register --conf as an
-	# instance. Newer vnt2_web builds already leave the initial list empty.
-	if [ -x "${DEFAULT_INSTANCE_CLEANUP}" ]; then
-		"${DEFAULT_INSTANCE_CLEANUP}" "127.0.0.1" "${web_port}" "${web_token}" "$(basename "${WEB_CONF_FILE}")" >/dev/null 2>&1 &
-	fi
 	date +%s >"${WEB_TIME}"
 	log_web 'start command submitted'
 }
@@ -2058,12 +1906,6 @@ start_service() {
 	ensure_log_files
 	log_web 'service start flow begin'
 	log_download 'service start flow begin'
-
-	if export_toml_from_uci; then
-		log_web "UCI to TOML export completed"
-	else
-		log_web 'UCI to TOML export failed, continue with existing config'
-	fi
 
 	config_load "${CONF}"
 	web_cfg="$(get_first_section_id "vnt2_web")"

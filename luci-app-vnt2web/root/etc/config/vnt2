@@ -1,8 +1,6 @@
 config vnt2_web
 	option enabled '0'
 	option auto_download '1'
-	option download_tag 'latest'
-	option download_repo 'vnt-dev/vnt'
 	option download_mirror 'auto'
 	option vnt2_web_bin '/usr/bin/vnt2_web'
 	option web_host '0.0.0.0'
