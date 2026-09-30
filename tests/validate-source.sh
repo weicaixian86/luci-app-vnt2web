@@ -147,8 +147,12 @@ check_project_contracts() {
 		fail "release body does not contain the expected build time label"
 	# Release assets must use the deterministic published name derived from the
 	# release tag, not the raw OpenWrt package file name.
-	grep -Fq 'FINAL_PACKAGE_FILE="${PACKAGE_NAME}_${RELEASE_VERSION}-x86_64.${{ matrix.package_format }}"' "$workflow" ||
-		fail "release asset name does not follow luci-app-vnt2web_<version>-x86_64.<format>"
+	grep -Fq 'FINAL_PACKAGE_FILE="${PACKAGE_NAME}_${RELEASE_VERSION}-all.${{ matrix.package_format }}"' "$workflow" ||
+		fail "release asset name does not follow luci-app-vnt2web_<version>-all.<format>"
+	grep -Fq 'EXPECTED_IPK="${PACKAGE_NAME}_${RELEASE_VERSION}-all.ipk"' "$workflow" ||
+		fail "release IPK name does not use the all architecture suffix"
+	grep -Fq 'EXPECTED_APK="${PACKAGE_NAME}_${RELEASE_VERSION}-all.apk"' "$workflow" ||
+		fail "release APK name does not use the all architecture suffix"
 	grep -Fq 'RELEASE_VERSION="${RAW_TAG#v}"' "$workflow" ||
 		fail "release asset version is not derived from the release tag"
 	grep -Fq 'test "${#package_files[@]}" -eq 1' "$workflow" ||

@@ -75,17 +75,38 @@ is_elf_binary() {
 }
 
 detect_arch_name() {
-	local mach
+	local mach package_arch arm_family arm_abi
 	mach="$(uname -m 2>/dev/null)"
+	package_arch="$(opkg print-architecture 2>/dev/null | awk '$2 != "all" && $2 != "noarch" {print $2; exit}')"
 	case "$mach" in
-		x86_64|amd64) echo "x86_64" ;;
-		aarch64|arm64) echo "aarch64" ;;
-		armv7*|armv6*|arm*) echo "arm" ;;
-		mips64el*) echo "mips64el" ;;
-		mipsel*) echo "mipsel" ;;
-		mips*) echo "mips" ;;
-		i386|i486|i586|i686) echo "x86" ;;
-		*) echo "${mach:-unknown}" ;;
+		x86_64|amd64) echo "x86_64"; return 0 ;;
+		aarch64|arm64) echo "aarch64"; return 0 ;;
+		armv7*) arm_family="armv7" ;;
+		arm*) arm_family="arm" ;;
+		mipsel*) echo "mipsel"; return 0 ;;
+		mips*) echo "mips"; return 0 ;;
+		*) ;;
+	esac
+	if [ -n "$arm_family" ]; then
+		if [ -e /lib/ld-musl-armhf.so.1 ] || [ -e /lib/ld-musl-armhf.so.1.* ]; then
+			arm_abi="musleabihf"
+		elif [ -e /lib/ld-musl-arm.so.1 ] || [ -e /lib/ld-musl-arm.so.1.* ]; then
+			arm_abi="musleabi"
+		else
+			case "$package_arch" in
+				*eabihf*|*hard*|*hf*|*neon*|*vfp*) arm_abi="musleabihf" ;;
+				*eabi*|*soft*) arm_abi="musleabi" ;;
+				*) arm_abi="" ;;
+			esac
+		fi
+		[ -n "$arm_abi" ] && { echo "${arm_family}-${arm_abi}"; return 0; }
+	fi
+	case "$package_arch" in
+		*x86_64*|*amd64*) echo "x86_64" ;;
+		*aarch64*|*arm64*) echo "aarch64" ;;
+		*mipsel*) echo "mipsel" ;;
+		*mips*) echo "mips" ;;
+		*) echo "unsupported" ;;
 	esac
 }
 

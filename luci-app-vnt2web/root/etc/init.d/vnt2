@@ -313,9 +313,9 @@ ensure_elf_exec() {
 }
 
 detect_arch_name() {
-	local mach arch
+	local mach package_arch arm_family arm_abi
 	mach="$(uname -m 2>/dev/null)"
-	arch="$(opkg print-architecture 2>/dev/null | awk 'NR==1 {print $2}')"
+	package_arch="$(opkg print-architecture 2>/dev/null | awk '$2 != "all" && $2 != "noarch" {print $2; exit}')"
 
 	case "$mach" in
 		x86_64|amd64)
@@ -326,13 +326,11 @@ detect_arch_name() {
 			echo "aarch64"
 			return 0
 		;;
-		armv7*|armv6*|arm*)
-			echo "arm"
-			return 0
+		armv7*)
+			arm_family="armv7"
 		;;
-		mips64el*)
-			echo "mips64el"
-			return 0
+		armv6*|arm*)
+			arm_family="arm"
 		;;
 		mipsel*)
 			echo "mipsel"
@@ -342,24 +340,36 @@ detect_arch_name() {
 			echo "mips"
 			return 0
 		;;
-		i386|i486|i586|i686)
-			echo "x86"
-			return 0
-		;;
 	esac
 
-	case "$arch" in
+	if [ -n "$arm_family" ]; then
+		# The musl loader is the authoritative ABI marker. Package names are
+		# used as a fallback where the loader symlink is absent.
+		if [ -e /lib/ld-musl-armhf.so.1 ] || [ -e /lib/ld-musl-armhf.so.1.* ]; then
+			arm_abi="musleabihf"
+		elif [ -e /lib/ld-musl-arm.so.1 ] || [ -e /lib/ld-musl-arm.so.1.* ]; then
+			arm_abi="musleabi"
+		else
+			case "$package_arch" in
+				*eabihf*|*hard*|*hf*|*neon*|*vfp*) arm_abi="musleabihf" ;;
+				*eabi*|*soft*) arm_abi="musleabi" ;;
+				*) arm_abi="" ;;
+			esac
+		fi
+		[ -n "$arm_abi" ] && {
+			echo "${arm_family}-${arm_abi}"
+			return 0
+		}
+		echo "unsupported"
+		return 0
+	fi
+
+	case "$package_arch" in
 		*x86_64*|*amd64*)
 			echo "x86_64"
 		;;
 		*aarch64*|*arm64*)
 			echo "aarch64"
-		;;
-		*arm*)
-			echo "arm"
-		;;
-		*mips64el*)
-			echo "mips64el"
 		;;
 		*mipsel*)
 			echo "mipsel"
@@ -367,11 +377,8 @@ detect_arch_name() {
 		*mips*)
 			echo "mips"
 		;;
-		*x86*|*i386*|*i686*)
-			echo "x86"
-		;;
 		*)
-			echo "${mach:-unknown}"
+			echo "unsupported"
 		;;
 	esac
 }
@@ -928,15 +935,17 @@ get_release_asset_name_candidates() {
 		aarch64)
 			echo "${prefix}-aarch64-unknown-linux-musl-v${version}${suffix}"
 		;;
-		arm)
-			echo "${prefix}-arm-unknown-linux-musleabi-v${version}${suffix}"
-			echo "${prefix}-arm-unknown-linux-musleabihf-v${version}${suffix}"
-			echo "${prefix}-armv7-unknown-linux-musleabi-v${version}${suffix}"
+		armv7-musleabihf)
 			echo "${prefix}-armv7-unknown-linux-musleabihf-v${version}${suffix}"
 		;;
-		mips64el)
-			echo "${prefix}-mips64el-unknown-linux-musl-v${version}${suffix}"
-			echo "${prefix}-mips64-unknown-linux-musl-v${version}${suffix}"
+		armv7-musleabi)
+			echo "${prefix}-armv7-unknown-linux-musleabi-v${version}${suffix}"
+		;;
+		arm-musleabihf)
+			echo "${prefix}-arm-unknown-linux-musleabihf-v${version}${suffix}"
+		;;
+		arm-musleabi)
+			echo "${prefix}-arm-unknown-linux-musleabi-v${version}${suffix}"
 		;;
 		mipsel)
 			echo "${prefix}-mipsel-unknown-linux-musl-v${version}${suffix}"
@@ -944,12 +953,8 @@ get_release_asset_name_candidates() {
 		mips)
 			echo "${prefix}-mips-unknown-linux-musl-v${version}${suffix}"
 		;;
-		x86)
-			echo "${prefix}-i686-unknown-linux-musl-v${version}${suffix}"
-			echo "${prefix}-x86-unknown-linux-musl-v${version}${suffix}"
-		;;
 		*)
-			echo "${prefix}-${arch_name}-unknown-linux-musl-v${version}${suffix}"
+			return 1
 		;;
 	esac
 }
@@ -1301,6 +1306,15 @@ auto_download_bundle_for_mode() {
 	cache_mirror_key="$(get_download_mirror_cache_key "$download_repo" "$download_mirror" "$custom_mirror_url")"
 
 	arch_name="$(detect_arch_name)"
+	case "$arch_name" in
+		x86_64|aarch64|armv7-musleabihf|armv7-musleabi|arm-musleabihf|arm-musleabi|mips|mipsel)
+			;;
+		*)
+			log_download "unsupported device architecture: ${arch_name:-unknown}"
+			write_download_state "$state_file" "failed" "unsupported device architecture" "" "$download_tag" "${arch_name:-unknown}" ""
+			return 1
+		;;
+	esac
 	query_dir="${DOWNLOAD_CACHE_BASE}/query_$(sanitize_name "${cache_mirror_key}_${download_repo}_${download_tag}_${arch_name}_${scope}")"
 	json_file="${query_dir}/release.json"
 	mkdir -p "$query_dir"

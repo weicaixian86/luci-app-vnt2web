@@ -237,7 +237,7 @@ jobs:
           RELEASE_VERSION="${RAW_TAG#v}"
           RELEASE_VERSION="${RELEASE_VERSION#V}"
           test -n "${RELEASE_VERSION}"
-          FINAL_PACKAGE_FILE="${PACKAGE_NAME}_${RELEASE_VERSION}-x86_64.${{ matrix.package_format }}"
+          FINAL_PACKAGE_FILE="${PACKAGE_NAME}_${RELEASE_VERSION}-all.${{ matrix.package_format }}"
           cp -f "${SOURCE_PACKAGE_FILE}" "output/${FINAL_PACKAGE_FILE}"
           test -f "output/${FINAL_PACKAGE_FILE}"
           echo "Source package file: ${SOURCE_PACKAGE_NAME}"
@@ -247,7 +247,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: openwrt-${{ matrix.openwrt_version }}-x86_64-${{ matrix.package_format }}
+          name: openwrt-${{ matrix.openwrt_version }}-all-${{ matrix.package_format }}
           path: output/*
           if-no-files-found: error
 
@@ -283,8 +283,8 @@ jobs:
           test "$(printf '%s\n' "${IPK_FILES}" | grep -c .)" -eq 1
           test "$(printf '%s\n' "${APK_FILES}" | grep -c .)" -eq 1
 
-          EXPECTED_IPK="${PACKAGE_NAME}_${RELEASE_VERSION}-x86_64.ipk"
-          EXPECTED_APK="${PACKAGE_NAME}_${RELEASE_VERSION}-x86_64.apk"
+          EXPECTED_IPK="${PACKAGE_NAME}_${RELEASE_VERSION}-all.ipk"
+          EXPECTED_APK="${PACKAGE_NAME}_${RELEASE_VERSION}-all.apk"
           test "$(basename "${IPK_FILES}")" = "${EXPECTED_IPK}"
           test "$(basename "${APK_FILES}")" = "${EXPECTED_APK}"
           echo "Verified release assets: ${EXPECTED_IPK}, ${EXPECTED_APK}"

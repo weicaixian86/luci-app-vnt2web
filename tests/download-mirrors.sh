@@ -131,6 +131,7 @@ test_fixed_release_endpoint_selection() {
 	load_function get_release_api_candidates
 	load_function get_release_asset_name_candidates
 	load_function get_release_asset_url
+	load_function detect_arch_name
 	VNT2_FIXED_REPO="vnt-dev/vnt"
 	VNT2_FIXED_VERSION="2.0.10"
 
@@ -153,6 +154,44 @@ test_fixed_release_endpoint_selection() {
 	assert_equal "vnt2-x86_64-unknown-linux-musl-v2.0.10.zip" \
 		"$(get_release_asset_name_candidates web 2.0.10 x86_64)" \
 		"fixed release asset name changed"
+	for arch_asset in \
+		"x86_64 vnt2-x86_64-unknown-linux-musl-v2.0.10.zip" \
+		"aarch64 vnt2-aarch64-unknown-linux-musl-v2.0.10.zip" \
+		"armv7-musleabihf vnt2-armv7-unknown-linux-musleabihf-v2.0.10.zip" \
+		"armv7-musleabi vnt2-armv7-unknown-linux-musleabi-v2.0.10.zip" \
+		"arm-musleabihf vnt2-arm-unknown-linux-musleabihf-v2.0.10.zip" \
+		"arm-musleabi vnt2-arm-unknown-linux-musleabi-v2.0.10.zip" \
+		"mips vnt2-mips-unknown-linux-musl-v2.0.10.zip" \
+		"mipsel vnt2-mipsel-unknown-linux-musl-v2.0.10.zip"
+	do
+		arch="${arch_asset%% *}"
+		expected="${arch_asset#* }"
+		assert_equal "$expected" "$(get_release_asset_name_candidates web 2.0.10 "$arch")" \
+			"release asset mapping changed for ${arch}"
+	done
+	if get_release_asset_name_candidates web 2.0.10 unsupported >/dev/null; then
+		fail "asset helper accepted an unsupported architecture"
+	fi
+	for arch_case in \
+		"x86_64 x86_64 x86_64" \
+		"aarch64 aarch64 aarch64" \
+		"armv7 armv7 armv7_eabihf armv7-musleabihf" \
+		"armv7 armv7 armv7_eabi armv7-musleabi" \
+		"arm arm arm_eabihf arm-musleabihf" \
+		"arm arm arm_eabi arm-musleabi" \
+		"mips mips mips_24kc mips" \
+		"mipsel mipsel mipsel_24kc mipsel" \
+		"i686 i686 i386 unsupported"
+	do
+		set -- $arch_case
+		mock_machine="$1"
+		mock_package_arch="${3:-$2}"
+		expected_arch="${4:-$3}"
+		uname() { printf '%s\n' "$mock_machine"; }
+		opkg() { printf 'arch %s 1\n' "$mock_package_arch"; }
+		assert_equal "$expected_arch" "$(detect_arch_name)" "architecture detection changed for ${mock_machine}/${mock_package_arch}"
+	done
+	unset -f uname opkg
 	if get_release_asset_name_candidates web 2.0.9 x86_64 >/dev/null; then
 		fail "asset name helper accepted a non-fixed version"
 	fi
