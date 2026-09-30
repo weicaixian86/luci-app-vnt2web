@@ -314,6 +314,8 @@ ensure_elf_exec() {
 
 detect_arch_name() {
 	local mach package_arch arm_family arm_abi
+	arm_family=""
+	arm_abi=""
 	mach="$(uname -m 2>/dev/null)"
 	package_arch="$(opkg print-architecture 2>/dev/null | awk '$2 != "all" && $2 != "noarch" {print $2; exit}')"
 
