@@ -355,6 +355,104 @@ test_web_config_directory_and_empty_default() {
 	printf 'PASS: Web starts with an empty /vnt_config and no default TOML\n'
 }
 
+test_persistent_machine_id() (
+	dir="$(mktemp -d)"
+	trap 'rm -rf "$dir"' EXIT INT TERM
+	load_function valid_machine_id
+	load_function trim_value
+	load_function read_machine_id
+	load_function ensure_persistent_machine_id
+	log_web() { printf '%s\n' "$*" >>"$dir/log"; }
+	MACHINE_ID_FILE="$dir/etc/machine-id"
+	DBUS_MACHINE_ID_FILE="$dir/tmp/lib/dbus/machine-id"
+	mkdir -p "$dir/etc" "$(dirname "$DBUS_MACHINE_ID_FILE")"
+	# IDs must contain exactly 32 hexadecimal characters.
+	old_id=1234567890abcdef1234567890abcdef
+	valid_machine_id "$old_id" || fail "valid machine ID was rejected"
+	for invalid in '' short '00000000000000000000000000000000' '1234567890abcdef1234567890abcdeg'; do
+		if valid_machine_id "$invalid"; then fail "invalid machine ID was accepted"; fi
+	done
+	printf '  %s  \n' "$old_id" >"$DBUS_MACHINE_ID_FILE"
+	[ "$(read_machine_id "$DBUS_MACHINE_ID_FILE")" = "$old_id" ] || fail "machine ID whitespace was not trimmed"
+	# Old predictable temporary names must not be followed or overwritten.
+	printf '%s\n' untouched >"$dir/sentinel"
+	ln -s "$dir/sentinel" "${MACHINE_ID_FILE}.$$"
+	ln -s "$dir/sentinel" "${DBUS_MACHINE_ID_FILE}.$$"
+	ensure_persistent_machine_id || fail "existing D-Bus ID could not be persisted"
+	[ "$(cat "$dir/sentinel")" = untouched ] || fail "preexisting temporary symlink was overwritten"
+	rm -f "${MACHINE_ID_FILE}.$$" "${DBUS_MACHINE_ID_FILE}.$$"
+	[ "$(cat "$MACHINE_ID_FILE")" = "$old_id" ] || fail "existing identity was changed"
+	[ "$(readlink "$DBUS_MACHINE_ID_FILE")" = "$MACHINE_ID_FILE" ] || fail "D-Bus ID is not linked to persistent storage"
+	[ "$(stat -c '%a' "$MACHINE_ID_FILE")" = 444 ] || fail "machine ID permissions are not 0444"
+	before="$(stat -c '%Y' "$MACHINE_ID_FILE")"
+	ensure_persistent_machine_id || fail "repeated startup failed"
+	[ "$(stat -c '%Y' "$MACHINE_ID_FILE")" = "$before" ] || fail "repeated startup rewrote persistent ID"
+
+	# Simulate a reboot replacing the entire volatile D-Bus directory.
+	rm -rf "$dir/tmp"
+	ensure_persistent_machine_id || fail "startup after clearing /tmp failed"
+	[ "$(cat "$DBUS_MACHINE_ID_FILE")" = "$old_id" ] || fail "reboot changed automatic ID"
+	rm -f "$DBUS_MACHINE_ID_FILE"
+	printf '%s\n' fedcba0987654321fedcba0987654321 >"$DBUS_MACHINE_ID_FILE"
+	ensure_persistent_machine_id || fail "different volatile ID could not be restored"
+	[ "$(cat "$DBUS_MACHINE_ID_FILE")" = "$old_id" ] || fail "volatile ID overrides persistent ID"
+
+	chmod 600 "$MACHINE_ID_FILE"
+	printf '%s\n' invalid >"$MACHINE_ID_FILE"
+	if ensure_persistent_machine_id; then fail "invalid persistent ID did not stop startup"; fi
+	[ "$(cat "$MACHINE_ID_FILE")" = invalid ] || fail "invalid persistent ID was silently replaced"
+	rm -f "$MACHINE_ID_FILE"
+	ln -s "$DBUS_MACHINE_ID_FILE" "$MACHINE_ID_FILE"
+	if ensure_persistent_machine_id; then fail "persistent symlink was accepted"; fi
+	rm -f "$MACHINE_ID_FILE" "$DBUS_MACHINE_ID_FILE"
+	ensure_persistent_machine_id || fail "random machine ID generation failed"
+	generated="$(cat "$MACHINE_ID_FILE")"
+	valid_machine_id "$generated" || fail "generated machine ID is invalid"
+	ensure_persistent_machine_id || fail "generated ID could not be reused"
+	[ "$(cat "$MACHINE_ID_FILE")" = "$generated" ] || fail "generated ID changed on restart"
+
+	rm -f "$MACHINE_ID_FILE" "$DBUS_MACHINE_ID_FILE"
+	MACHINE_ID_FILE="$dir/missing-parent/machine-id"
+	if ensure_persistent_machine_id 2>/dev/null; then fail "failed persistent write did not stop startup"; fi
+	MACHINE_ID_FILE="$dir/etc/machine-id"
+	mkdir "$DBUS_MACHINE_ID_FILE"
+	if ensure_persistent_machine_id; then fail "D-Bus directory was accepted as a file"; fi
+	rmdir "$DBUS_MACHINE_ID_FILE"
+	mkfifo "$DBUS_MACHINE_ID_FILE"
+	if read_machine_id "$DBUS_MACHINE_ID_FILE"; then fail "FIFO was accepted as machine ID"; fi
+	if ensure_persistent_machine_id; then fail "volatile FIFO did not stop startup"; fi
+	[ -p "$DBUS_MACHINE_ID_FILE" ] || fail "volatile special file was overwritten"
+	rm -f "$DBUS_MACHINE_ID_FILE"
+	ensure_persistent_machine_id || fail "startup failed after removing special file"
+	rm -f "$DBUS_MACHINE_ID_FILE"
+	printf '%s\n' fedcba0987654321fedcba0987654321 >"$DBUS_MACHINE_ID_FILE"
+	(
+		mv() { return 1; }
+		if ensure_persistent_machine_id; then fail "failed link replacement did not stop startup"; fi
+	)
+	[ "$(cat "$DBUS_MACHINE_ID_FILE")" = fedcba0987654321fedcba0987654321 ] || fail "failed replacement removed original D-Bus ID"
+	[ "$(find "$(dirname "$DBUS_MACHINE_ID_FILE")" -name 'machine-id.??????' | wc -l | tr -d ' ')" -eq 0 ] || fail "failed link replacement left a temporary directory"
+	ensure_persistent_machine_id || fail "retry after link replacement failure failed"
+	rm -f "$MACHINE_ID_FILE" "$DBUS_MACHINE_ID_FILE"
+	(
+		od() { return 1; }
+		if ensure_persistent_machine_id; then fail "random generation failure did not stop startup"; fi
+	)
+	[ ! -e "$MACHINE_ID_FILE" ] || fail "random generation failure persisted an invalid ID"
+	ensure_persistent_machine_id || fail "retry after random generation failure failed"
+	chmod 600 "$MACHINE_ID_FILE"
+	printf '%0130d' 0 >"$MACHINE_ID_FILE"
+	if ensure_persistent_machine_id; then fail "oversized persistent ID was accepted"; fi
+	rm -f "$MACHINE_ID_FILE"
+	mkfifo "$MACHINE_ID_FILE"
+	if ensure_persistent_machine_id; then fail "persistent FIFO was accepted"; fi
+	[ "$(find "$dir/etc" -name 'machine-id.??????' | wc -l | tr -d ' ')" -eq 0 ] || fail "temporary persistent files were left behind"
+
+	function_definition start_web_instance | grep -Fq 'ensure_persistent_machine_id || return 1' || fail "Web startup does not require persistent identity"
+	grep -Fxq '/etc/machine-id' "${ROOT_DIR}/luci-app-vnt2web/root/lib/upgrade/keep.d/vnt2web" || fail "sysupgrade does not preserve machine ID"
+	printf 'PASS: automatic machine ID persists across restart, reboot and sysupgrade; failures stop startup\n'
+)
+
 test_status_view_escaping() {
 	grep -Fq 'function escapeHtml(v)' "$STATUS_VIEW" || fail "status view does not define HTML escaping"
 	grep -Fq '.replace(/&/g, "&amp;")' "$STATUS_VIEW" || fail "status view does not escape ampersands"
@@ -415,6 +513,7 @@ test_apply_stop_keeps_network
 test_start_service_propagates_component_failure
 test_idempotent_uci_helpers
 test_web_config_directory_and_empty_default
+test_persistent_machine_id
 test_status_view_escaping
 test_uploaded_archive_safety
 test_upload_is_deferred_to_worker

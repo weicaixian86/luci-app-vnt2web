@@ -24,6 +24,17 @@ apk info luci-app-vnt2web
 同一把固定签名密钥构建时，可直接通过 LuCI 或 SSH 安装和升级。LuCI 软件包上传页面
 不会自动添加 `--allow-untrusted` 参数。
 
+## 自动设备 ID
+
+Web 配置未填写 `device_id` 时，插件在启动前将系统自动 ID 持久化到
+`/etc/machine-id`，并让 `/var/lib/dbus/machine-id` 指向该文件。首次启用会沿用
+当前有效 ID；没有有效 ID 时才随机生成。重启和升级继续使用同一个 ID，不需要
+在 TOML 中手动填写。这也会稳定系统 D-Bus machine ID。
+
+用户显式填写的 `device_id` 仍优先。持久化失败或已有持久化文件无效时，服务
+会停止启动并记录错误，避免意外改变身份。升级和卸载不会删除系统 machine ID。
+本机制不清理服务器上已存在的 IP 冲突记录；旧记录需要等待释放或由服务器管理方处理。
+
 ## 卸载方法
 
 OpenWrt 24.10.x：
