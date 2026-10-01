@@ -259,4 +259,65 @@ function M.read_log_file(path, max_lines)
 	return M.normalize_log_text(content)
 end
 
+local function log_timestamp(line)
+	return tostring(line or ""):match("^(%d%d%d%d%-%d%d%-%d%d %d%d:%d%d:%d%d)") or ""
+end
+
+local function append_log_record(records, record)
+	if record and #record.lines > 0 then
+		record.order = #records + 1
+		record.text = table.concat(record.lines, "\n")
+		record.lines = nil
+		records[#records + 1] = record
+	end
+end
+
+local function parse_log_records(content, records)
+	local current
+
+	for line in (tostring(content or "") .. "\n"):gmatch("(.-)\n") do
+		if line ~= "" then
+			local timestamp = log_timestamp(line)
+			if timestamp ~= "" then
+				append_log_record(records, current)
+				current = { timestamp = timestamp, lines = { line } }
+			elseif current then
+				current.lines[#current.lines + 1] = line
+			else
+				-- A tail can begin in the middle of a multiline error. Keep that
+				-- continuation together instead of sorting each line separately.
+				current = { timestamp = "", lines = { line } }
+			end
+		end
+	end
+
+	append_log_record(records, current)
+end
+
+function M.merge_log_files(paths, max_lines)
+	local records = {}
+	for _, path in ipairs(paths or {}) do
+		parse_log_records(M.read_log_file(path, max_lines), records)
+	end
+
+	table.sort(records, function(a, b)
+		if a.timestamp == b.timestamp then
+			return a.order < b.order
+		end
+		if a.timestamp == "" then
+			return true
+		end
+		if b.timestamp == "" then
+			return false
+		end
+		return a.timestamp < b.timestamp
+	end)
+
+	local output = {}
+	for _, record in ipairs(records) do
+		output[#output + 1] = record.text
+	end
+	return table.concat(output, "\n")
+end
+
 return M

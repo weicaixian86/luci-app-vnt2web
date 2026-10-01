@@ -39,6 +39,8 @@ test_debounce() {
 	VNT2_RESTART_CLAIMED_FILE="$dir/claimed" \
 	VNT2_RESTART_LOG_FILE="$dir/log" \
 	VNT2_RESTART_COMMAND=/usr/bin/true \
+	VNT2_NETWORK_CONFIG_DIR="$dir/config" \
+	VNT2_NETWORK_SYNC_COMMAND=/usr/bin/true \
 	VNT2_RESTART_DELAY=2 \
 	VNT2_RESTART_POLL_INTERVAL=1 \
 		sh "$WORKER" &
@@ -82,6 +84,8 @@ EOF
 	VNT2_RESTART_CLAIMED_FILE="$dir/claimed" \
 	VNT2_RESTART_LOG_FILE="$dir/log" \
 	VNT2_RESTART_COMMAND="$dir/mock-restart" \
+	VNT2_NETWORK_CONFIG_DIR="$dir/config" \
+	VNT2_NETWORK_SYNC_COMMAND=/usr/bin/true \
 	VNT2_RESTART_DELAY=1 \
 	VNT2_RESTART_POLL_INTERVAL=1 \
 		sh "$WORKER" &
@@ -114,6 +118,56 @@ EOF
 	printf 'PASS: a request received during restart was retained\n'
 }
 
+test_network_config_changes_sync() {
+	dir="$(mktemp -d)"
+	trap 'stop_worker "$dir"; rm -rf "$dir"' EXIT INT TERM
+	mkdir -p "$dir/config"
+
+	cat >"$dir/mock-sync" <<'EOF'
+#!/bin/sh
+count="$(cat "$MOCK_STATE_DIR/sync-count" 2>/dev/null || printf '0')"
+count=$((count + 1))
+printf '%s\n' "$count" >"$MOCK_STATE_DIR/sync-count"
+exit 1
+EOF
+	chmod 0755 "$dir/mock-sync"
+
+	cat >"$dir/mock-restart" <<'EOF'
+#!/bin/sh
+count="$(cat "$MOCK_STATE_DIR/restart-count" 2>/dev/null || printf '0')"
+count=$((count + 1))
+printf '%s\n' "$count" >"$MOCK_STATE_DIR/restart-count"
+EOF
+	chmod 0755 "$dir/mock-restart"
+
+	MOCK_STATE_DIR="$dir" \
+	VNT2_RESTART_PENDING_FILE="$dir/pending" \
+	VNT2_RESTART_CLAIMED_FILE="$dir/claimed" \
+	VNT2_RESTART_LOG_FILE="$dir/log" \
+	VNT2_RESTART_COMMAND="$dir/mock-restart" \
+	VNT2_NETWORK_CONFIG_DIR="$dir/config" \
+	VNT2_NETWORK_SYNC_COMMAND="$dir/mock-sync" \
+	VNT2_RESTART_DELAY=1 \
+	VNT2_RESTART_POLL_INTERVAL=1 \
+		sh "$WORKER" &
+	echo "$!" >"$dir/pid"
+
+	wait_for_count "$dir/sync-count" 1 10 || fail "initial network snapshot was not synchronized"
+	printf '%s\n' 'device_mode = "tun"' 'tun_name = "vnt2tun"' >"$dir/config/active.toml"
+	wait_for_count "$dir/sync-count" 2 10 || fail "network config change did not trigger synchronization"
+
+	date +%s >"$dir/pending"
+	wait_for_count "$dir/restart-count" 1 10 || \
+		fail "network synchronization failure stopped queued restart handling"
+	grep -Fq 'network sync failed' "$dir/log" || fail "network synchronization failure was not logged"
+
+	stop_worker "$dir"
+	rm -rf "$dir"
+	trap - EXIT INT TERM
+	printf 'PASS: config changes trigger network synchronization without blocking restarts\n'
+}
+
 test_debounce
 test_request_during_restart
+test_network_config_changes_sync
 printf 'restart-worker tests passed\n'

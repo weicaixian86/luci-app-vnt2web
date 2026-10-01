@@ -471,32 +471,10 @@ end
 
 
 local function write_runtime_log()
-	local lines = {}
-	for _, source in ipairs({
-		{ path = "/tmp/vnt2-web.log", label = "vnt2-web" },
-		{ path = "/tmp/vnt2-download.log", label = "download" }
-	}) do
-		local content = get_log_content(source.path, LOG_DISPLAY_LINES)
-		for line in (content .. "\n"):gmatch("(.-)\n") do
-			if line ~= "" then
-				local timestamp = line:match("^(%d%d%d%d%-%d%d%-%d%d %d%d:%d%d:%d%d)") or ""
-				lines[#lines + 1] = { timestamp = timestamp, text = line }
-			end
-		end
-	end
-	table.sort(lines, function(a, b)
-		if a.timestamp == b.timestamp then
-			return a.text < b.text
-		end
-		if a.timestamp == "" then return false end
-		if b.timestamp == "" then return true end
-		return a.timestamp < b.timestamp
-	end)
-	local output = {}
-	for _, line in ipairs(lines) do
-		output[#output + 1] = line.text
-	end
-	plain_write(table.concat(output, "\n"))
+	plain_write(textutil.merge_log_files({
+		"/tmp/vnt2-web.log",
+		"/tmp/vnt2-download.log"
+	}, LOG_DISPLAY_LINES))
 end
 
 function get_runtime_log()

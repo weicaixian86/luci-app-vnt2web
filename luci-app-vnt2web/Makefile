@@ -33,6 +33,12 @@ if [ -z "$${IPKG_INSTROOT}" ] && [ -x /etc/init.d/vnt2-preview-worker ] ; then
   /etc/init.d/vnt2-preview-worker stop >/dev/null 2>&1
   /etc/init.d/vnt2-preview-worker disable >/dev/null 2>&1
 fi
+if [ -z "$${IPKG_INSTROOT}" ] && [ -x /etc/init.d/vnt2 ] ; then
+  if [ "$${PKG_UPGRADE}" != "1" ] ; then
+    /etc/init.d/vnt2 stop >/dev/null 2>&1
+    /etc/init.d/vnt2 disable >/dev/null 2>&1
+  fi
+fi
 if [ -z "$${IPKG_INSTROOT}" ] && [ -x /etc/init.d/vnt2-version-worker ] ; then
   /etc/init.d/vnt2-version-worker stop >/dev/null 2>&1
   /etc/init.d/vnt2-version-worker disable >/dev/null 2>&1

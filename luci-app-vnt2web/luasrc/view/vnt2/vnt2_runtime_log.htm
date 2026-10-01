@@ -1,27 +1,10 @@
 <%
 local textutil = require "luci.model.vnt2_text"
 local function read_runtime_log()
-	local lines = {}
-	for _, path in ipairs({ "/tmp/vnt2-web.log", "/tmp/vnt2-download.log" }) do
-		local content = textutil.read_log_file(path, 300)
-		for line in (content .. "\n"):gmatch("(.-)\n") do
-			if line ~= "" then
-				local timestamp = line:match("^(%d%d%d%d%-%d%d%-%d%d %d%d:%d%d:%d%d)") or ""
-				lines[#lines + 1] = { timestamp = timestamp, text = line }
-			end
-		end
-	end
-	table.sort(lines, function(a, b)
-		if a.timestamp == b.timestamp then return a.text < b.text end
-		if a.timestamp == "" then return false end
-		if b.timestamp == "" then return true end
-		return a.timestamp < b.timestamp
-	end)
-	local output = {}
-	for _, line in ipairs(lines) do
-		output[#output + 1] = line.text
-	end
-	return table.concat(output, "\n")
+	return textutil.merge_log_files({
+		"/tmp/vnt2-web.log",
+		"/tmp/vnt2-download.log"
+	}, 300)
 end
 local log_content = read_runtime_log()
 -%>

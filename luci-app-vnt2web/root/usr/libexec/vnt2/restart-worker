@@ -4,8 +4,13 @@ PENDING_FILE="${VNT2_RESTART_PENDING_FILE:-/tmp/vnt2-restart.pending}"
 CLAIMED_FILE="${VNT2_RESTART_CLAIMED_FILE:-/tmp/vnt2-restart.claimed}"
 DOWNLOAD_LOG="${VNT2_RESTART_LOG_FILE:-/tmp/vnt2-download.log}"
 RESTART_COMMAND="${VNT2_RESTART_COMMAND:-/etc/init.d/vnt2}"
+NETWORK_CONFIG_DIR="${VNT2_NETWORK_CONFIG_DIR:-/vnt_config}"
+NETWORK_SYNC_COMMAND="${VNT2_NETWORK_SYNC_COMMAND:-/etc/init.d/vnt2 sync_network}"
+SYS_CLASS_NET="${VNT2_SYS_CLASS_NET:-/sys/class/net}"
 RESTART_DELAY="${VNT2_RESTART_DELAY:-15}"
 POLL_INTERVAL="${VNT2_RESTART_POLL_INTERVAL:-1}"
+NETWORK_SNAPSHOT=""
+NETWORK_SNAPSHOT_READY=0
 
 log_worker() {
 	printf '%s download : %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >>"${DOWNLOAD_LOG}"
@@ -40,9 +45,50 @@ run_restart() {
 	return "$rc"
 }
 
+read_network_snapshot() {
+	local file name size mtime dir
+
+	if [ -d "$NETWORK_CONFIG_DIR" ]; then
+		for file in "$NETWORK_CONFIG_DIR"/*.toml "$NETWORK_CONFIG_DIR/.vnt_current_config.txt"; do
+			[ -f "$file" ] || continue
+			[ -L "$file" ] && continue
+			name="${file##*/}"
+			size="$(stat -c '%s' "$file" 2>/dev/null || wc -c <"$file" 2>/dev/null || printf '0')"
+			mtime="$(stat -c '%Y' "$file" 2>/dev/null || printf '0')"
+			printf '%s %s %s\n' "$name" "$size" "$mtime"
+		done
+	fi
+	if [ -d "$SYS_CLASS_NET" ]; then
+		for dir in "$SYS_CLASS_NET"/*; do
+			[ -d "$dir" ] || continue
+			[ -f "$dir/tun_flags" ] || continue
+			printf 'tun-device %s\n' "${dir##*/}"
+		done
+	fi
+}
+
+sync_network_if_changed() {
+	local snapshot rc
+
+	snapshot="$(read_network_snapshot)"
+	if [ "$NETWORK_SNAPSHOT_READY" -eq 1 ] && [ "$snapshot" = "$NETWORK_SNAPSHOT" ]; then
+		return 0
+	fi
+	NETWORK_SNAPSHOT="$snapshot"
+	NETWORK_SNAPSHOT_READY=1
+	# shellcheck disable=SC2086
+	$NETWORK_SYNC_COMMAND </dev/null >/dev/null 2>&1
+	rc=$?
+	if [ "$rc" -ne 0 ]; then
+		log_worker "network sync failed rc=${rc}"
+	fi
+	return 0
+}
+
 trap 'exit 0' INT TERM
 
 while :; do
+	sync_network_if_changed
 	if [ ! -f "$CLAIMED_FILE" ]; then
 		claim_restart_request || {
 			sleep "$POLL_INTERVAL"

@@ -159,6 +159,10 @@ test_worker_package_lifecycle() {
 	grep -Fq '/etc/init.d/vnt2-worker enable' "$PACKAGE_MAKEFILE" || fail "postinst does not enable the worker"
 	grep -Fq '/etc/init.d/vnt2-worker restart' "$PACKAGE_MAKEFILE" || fail "postinst does not start the worker"
 	grep -Fq '/etc/init.d/vnt2-worker stop' "$PACKAGE_MAKEFILE" || fail "prerm does not stop the worker"
+	grep -Fq '/etc/init.d/vnt2 stop' "$PACKAGE_MAKEFILE" || \
+		fail "prerm does not stop the main service so managed network state is cleaned on uninstall"
+	grep -Fq '/etc/init.d/vnt2 disable' "$PACKAGE_MAKEFILE" || \
+		fail "prerm does not disable the main service on uninstall"
 	grep -Fq '/etc/init.d/vnt2-worker disable' "$PACKAGE_MAKEFILE" || fail "prerm does not disable the worker"
 	grep -Fq '/etc/init.d/vnt2-upload-worker enable' "$PACKAGE_MAKEFILE" || fail "postinst does not enable the upload worker"
 	grep -Fq '/etc/init.d/vnt2-upload-worker restart' "$PACKAGE_MAKEFILE" || fail "postinst does not start the upload worker"
@@ -247,6 +251,7 @@ test_start_service_propagates_component_failure() {
 	log_download() { :; }
 	config_load() { :; }
 	get_first_section_id() { printf '%s\n' "$1"; }
+	sync_network_command() { return 0; }
 	start_web_instance() { return 1; }
 	CONF=vnt2
 
@@ -256,6 +261,180 @@ test_start_service_propagates_component_failure() {
 	start_web_instance() { return 0; }
 	start_service || fail "start_service failed when all components succeeded"
 	printf 'PASS: service startup propagates component failures\n'
+}
+
+test_start_service_syncs_network() {
+	dir="$(mktemp -d)"
+	trap 'rm -rf "$dir"' EXIT INT TERM
+	calls="$dir/calls"
+
+	load_function start_service
+	ensure_log_files() { :; }
+	log_web() { :; }
+	log_download() { :; }
+	config_load() { :; }
+	get_first_section_id() { printf '%s\n' "$1"; }
+	sync_network_command() { printf '%s\n' sync_network >>"$calls"; return 0; }
+	start_web_instance() { return 0; }
+	CONF=vnt2
+
+	start_service || fail "start_service failed when network sync succeeded"
+	[ "$(grep -c '^sync_network$' "$calls" || true)" -eq 1 ] || \
+		fail "start_service did not synchronize the managed network exactly once"
+
+	sync_network_command() { return 1; }
+	if start_service; then
+		fail "start_service hid a network synchronization failure"
+	fi
+
+	rm -rf "$dir"
+	trap - EXIT INT TERM
+	printf 'PASS: start_service synchronizes network and propagates its failure\n'
+}
+
+test_network_sync_state() {
+	dir="$(mktemp -d)"
+	trap 'rm -rf "$dir"' EXIT INT TERM
+	calls="$dir/calls"
+	config_dir="$dir/config"
+	mkdir -p "$config_dir"
+
+	load_function trim_value
+	load_function toml_get_raw
+	load_function toml_get_string
+	load_function toml_get_bool
+	load_function toml_strip_quotes
+	load_function toml_get_value
+	load_function is_safe_toml_name
+	load_function read_running_config_names
+	load_function count_device_configs
+	load_function detect_tun_device
+	load_function count_tun_devices
+	load_function sync_network_state
+	load_function cleanup_network
+	load_function configure_network
+
+	log_web() { :; }
+	config_load() { :; }
+	get_first_section_id() { printf '%s\n' "vnt2_web"; }
+	config_get_bool() { eval "$1=1"; }
+	prepare_client_network_runtime() { VNT2_FORWARD_LIST="vnt2fwlan vnt2fwwan lanfwvnt2"; }
+	cleanup_network() { printf '%s\n' cleanup_network >>"$calls"; }
+	configure_network() { printf 'configure_network %s %s %s\n' "$1" "$2" "$3" >>"$calls"; }
+	uci() {
+		if [ "${1:-}" = "-q" ] && [ "${2:-}" = "get" ] && [ "${3:-}" = "network.VNT2.device" ]; then
+			[ -n "${MOCK_EXISTING_DEVICE:-}" ] && printf '%s\n' "$MOCK_EXISTING_DEVICE" && return 0
+			return 1
+		fi
+		return 1
+	}
+	WEB_CONFIG_DIR="$config_dir"
+	WEB_CURRENT_CONFIG_RECORD="$config_dir/.vnt_current_config.txt"
+	SYS_CLASS_NET="$dir/sys-class-net"
+	mkdir -p "$SYS_CLASS_NET"
+	CONF=vnt2
+	VNT2_FORWARD_LIST=""
+	NETWORK_SYNC_RESULT=""
+
+	: >"$calls"
+	sync_network_state
+	[ "$(grep -c '^cleanup_network$' "$calls" || true)" -eq 1 ] || \
+		fail "empty running record did not clean the managed network"
+	[ -z "$NETWORK_SYNC_RESULT" ] || fail "empty running record produced an unexpected sync result"
+
+	printf '%s\n' 'disabled.toml' >"$WEB_CURRENT_CONFIG_RECORD"
+	printf '%s\n' 'device_mode = "no"' >"$config_dir/disabled.toml"
+	: >"$calls"
+	sync_network_state
+	[ "$(grep -c '^cleanup_network$' "$calls" || true)" -eq 1 ] || \
+		fail "device_mode=no did not clean the managed network"
+
+	printf '%s\n' 'active.toml' >"$WEB_CURRENT_CONFIG_RECORD"
+	printf '%s\n' 'tun_name = "vnt2tun"' 'device_mode = "tun"' >"$config_dir/active.toml"
+	: >"$calls"
+	sync_network_state
+	grep -Fqx 'configure_network vnt2tun vnt2fwlan vnt2fwwan lanfwvnt2 0' "$calls" || \
+		fail "active TUN configuration did not create the managed network with forwarding rules"
+
+	printf '%s\n' 'tap.toml' >"$WEB_CURRENT_CONFIG_RECORD"
+	printf '%s\n' 'tun_name = "vnt2tap"' 'device_mode = "tap"' >"$config_dir/tap.toml"
+	: >"$calls"
+	sync_network_state
+	grep -Fqx 'configure_network vnt2tap vnt2fwlan vnt2fwwan lanfwvnt2 0' "$calls" || \
+		fail "active TAP configuration was not treated as a virtual device"
+
+	# An omitted device_mode defaults to tun, matching the upstream default.
+	printf '%s\n' 'default.toml' >"$WEB_CURRENT_CONFIG_RECORD"
+	printf '%s\n' 'tun_name = "vnt2default"' >"$config_dir/default.toml"
+	: >"$calls"
+	sync_network_state
+	grep -Fqx 'configure_network vnt2default vnt2fwlan vnt2fwwan lanfwvnt2 0' "$calls" || \
+		fail "omitted device_mode did not default to tun"
+
+	# TOML accepts single quotes and inline comments; both must be understood.
+	printf '%s\n' 'quoted.toml' >"$WEB_CURRENT_CONFIG_RECORD"
+	printf '%s\n' "tun_name = 'vnt2quoted' # inline comment" >"$config_dir/quoted.toml"
+	printf '%s\n' "device_mode = 'tap' # inline comment" >>"$config_dir/quoted.toml"
+	: >"$calls"
+	sync_network_state
+	grep -Fqx 'configure_network vnt2quoted vnt2fwlan vnt2fwwan lanfwvnt2 0' "$calls" || \
+		fail "single-quoted TOML with inline comments was not parsed as a TAP device"
+
+	printf '%s\n' 'missing-name.toml' >"$WEB_CURRENT_CONFIG_RECORD"
+	printf '%s\n' 'device_mode = "tun"' >"$config_dir/missing-name.toml"
+	: >"$calls"
+	sync_network_state
+	[ "$(grep -c '^cleanup_network$' "$calls" || true)" -eq 1 ] || \
+		fail "missing tun_name without a discoverable device did not clean the managed network"
+	[ "$NETWORK_SYNC_RESULT" = "missing-tun-name" ] || \
+		fail "missing tun_name did not report a diagnostic result"
+
+	mkdir -p "$SYS_CLASS_NET/tun0"
+	: >"$SYS_CLASS_NET/tun0/tun_flags"
+	: >"$calls"
+	sync_network_state
+	grep -Fqx 'configure_network tun0 vnt2fwlan vnt2fwwan lanfwvnt2 0' "$calls" || \
+		fail "a unique runtime TUN device was not used for the managed interface"
+	rm -rf "$SYS_CLASS_NET/tun0"
+
+	# During a procd restart the managed device can vanish briefly. Keep the
+	# existing managed interface instead of deleting and recreating it.
+	MOCK_EXISTING_DEVICE=vnt2tun
+	: >"$calls"
+	sync_network_state
+	grep -Fqx 'configure_network vnt2tun vnt2fwlan vnt2fwwan lanfwvnt2 0' "$calls" || \
+		fail "transient device disappearance removed the managed interface"
+	unset MOCK_EXISTING_DEVICE
+
+	printf '%s\n' 'first.toml' 'second.toml' >"$WEB_CURRENT_CONFIG_RECORD"
+	printf '%s\n' 'tun_name = "vnt2a"' 'device_mode = "tun"' >"$config_dir/first.toml"
+	printf '%s\n' 'tun_name = "vnt2b"' 'device_mode = "tap"' >"$config_dir/second.toml"
+	: >"$calls"
+	sync_network_state
+	[ "$(grep -c '^cleanup_network$' "$calls" || true)" -eq 1 ] || \
+		fail "multiple TUN/TAP configurations did not clean the managed network"
+	[ "$NETWORK_SYNC_RESULT" = "multiple-device-configs" ] || \
+		fail "multiple TUN/TAP configurations did not report a diagnostic result"
+
+	# A disabled Web service must never leave a managed interface behind.
+	config_get_bool() { eval "$1=0"; }
+	: >"$calls"
+	sync_network_state
+	[ "$(grep -c '^cleanup_network$' "$calls" || true)" -eq 1 ] || \
+		fail "disabled Web service did not clean the managed network"
+	config_get_bool() { eval "$1=1"; }
+
+	# Unsafe and stale names must be ignored without affecting valid entries.
+	printf '%s\n' '../escape.toml' 'stale.toml' 'valid.toml' >"$WEB_CURRENT_CONFIG_RECORD"
+	printf '%s\n' 'tun_name = "vnt2valid"' 'device_mode = "tun"' >"$config_dir/valid.toml"
+	: >"$calls"
+	sync_network_state
+	grep -Fqx 'configure_network vnt2valid vnt2fwlan vnt2fwwan lanfwvnt2 0' "$calls" || \
+		fail "unsafe or stale running records were not filtered"
+
+	rm -rf "$dir"
+	trap - EXIT INT TERM
+	printf 'PASS: network state follows the running configuration record\n'
 }
 
 test_idempotent_uci_helpers() {
@@ -314,6 +493,39 @@ test_idempotent_uci_helpers() {
 	rm -rf "$dir"
 	trap - EXIT INT TERM
 	printf 'PASS: unchanged UCI state produces no write\n'
+}
+
+test_no_nat_enables_ipv4_forwarding() {
+	dir="$(mktemp -d)"
+	trap 'rm -rf "$dir"' EXIT INT TERM
+	calls="$dir/calls"
+
+	load_function configure_network
+	uci_set_if_changed() { :; }
+	uci_delete_if_exists() { :; }
+	find_firewall_zone_name() { printf '%s\n' "$1"; }
+	uci() {
+		case "${1:-}" in
+			changes) : ;;
+			commit) : ;;
+		esac
+		return 0
+	}
+	sysctl() {
+		[ "${1:-}" = "-w" ] || return 1
+		printf 'sysctl %s\n' "$2" >>"$calls"
+	}
+
+	configure_network vnt2tun "vnt2fwlan" 0
+	[ ! -s "$calls" ] || fail "built-in NAT mode enabled kernel IPv4 forwarding"
+
+	configure_network vnt2tun "vnt2fwlan" 1 || true
+	grep -Fqx 'sysctl net.ipv4.ip_forward=1' "$calls" || \
+		fail "no_nat mode did not enable kernel IPv4 forwarding"
+
+	rm -rf "$dir"
+	trap - EXIT INT TERM
+	printf 'PASS: no_nat mode enables kernel IPv4 forwarding\n'
 }
 
 test_web_config_directory_and_empty_default() {
@@ -382,7 +594,14 @@ test_persistent_machine_id() (
 	[ "$(cat "$dir/sentinel")" = untouched ] || fail "preexisting temporary symlink was overwritten"
 	rm -f "${MACHINE_ID_FILE}.$$" "${DBUS_MACHINE_ID_FILE}.$$"
 	[ "$(cat "$MACHINE_ID_FILE")" = "$old_id" ] || fail "existing identity was changed"
-	[ "$(readlink "$DBUS_MACHINE_ID_FILE")" = "$MACHINE_ID_FILE" ] || fail "D-Bus ID is not linked to persistent storage"
+	if ln -s "$MACHINE_ID_FILE" "$dir/symlink-probe" 2>/dev/null &&
+		[ "$(readlink "$dir/symlink-probe")" = "$MACHINE_ID_FILE" ]; then
+		symlinks_supported=1
+		[ "$(readlink "$DBUS_MACHINE_ID_FILE")" = "$MACHINE_ID_FILE" ] || fail "D-Bus ID is not linked to persistent storage"
+	else
+		symlinks_supported=0
+	fi
+	rm -f "$dir/symlink-probe"
 	[ "$(stat -c '%a' "$MACHINE_ID_FILE")" = 444 ] || fail "machine ID permissions are not 0444"
 	before="$(stat -c '%Y' "$MACHINE_ID_FILE")"
 	ensure_persistent_machine_id || fail "repeated startup failed"
@@ -402,8 +621,10 @@ test_persistent_machine_id() (
 	if ensure_persistent_machine_id; then fail "invalid persistent ID did not stop startup"; fi
 	[ "$(cat "$MACHINE_ID_FILE")" = invalid ] || fail "invalid persistent ID was silently replaced"
 	rm -f "$MACHINE_ID_FILE"
-	ln -s "$DBUS_MACHINE_ID_FILE" "$MACHINE_ID_FILE"
-	if ensure_persistent_machine_id; then fail "persistent symlink was accepted"; fi
+	if [ "$symlinks_supported" -eq 1 ]; then
+		ln -s "$DBUS_MACHINE_ID_FILE" "$MACHINE_ID_FILE"
+		if ensure_persistent_machine_id; then fail "persistent symlink was accepted"; fi
+	fi
 	rm -f "$MACHINE_ID_FILE" "$DBUS_MACHINE_ID_FILE"
 	ensure_persistent_machine_id || fail "random machine ID generation failed"
 	generated="$(cat "$MACHINE_ID_FILE")"
@@ -511,7 +732,10 @@ test_worker_package_lifecycle
 test_local_version_sidecar
 test_apply_stop_keeps_network
 test_start_service_propagates_component_failure
+test_start_service_syncs_network
+test_network_sync_state
 test_idempotent_uci_helpers
+test_no_nat_enables_ipv4_forwarding
 test_web_config_directory_and_empty_default
 test_persistent_machine_id
 test_status_view_escaping

@@ -2,8 +2,8 @@
 
 START=99
 USE_PROCD=1
-EXTRA_COMMANDS="schedule_restart refresh_preview_version"
-EXTRA_HELP="\tschedule_restart\tQueue a restart for the vnt2 worker\n\trefresh_preview_version\tCheck latest prerelease for display only"
+EXTRA_COMMANDS="schedule_restart refresh_preview_version sync_network"
+EXTRA_HELP="\tschedule_restart\tQueue a restart for the vnt2 worker\n\trefresh_preview_version\tCheck latest prerelease for display only\n\tsync_network\tReconcile the VNT2 interface and firewall zone"
 
 CONF="vnt2"
 
@@ -26,6 +26,10 @@ VNT2_FIXED_VERSION="2.0.10"
 GH_PROXY_PREFIX="https://gh-proxy.com/"
 DOWNLOAD_MIRROR_RETRIES=3
 RESTART_PENDING_FILE="/tmp/vnt2-restart.pending"
+
+VNT2_FORWARD_LIST=""
+NETWORK_SYNC_RESULT=""
+SYS_CLASS_NET="${VNT2_SYS_CLASS_NET:-/sys/class/net}"
 
 INSTALL_BIN_DIR="/usr/bin"
 . /lib/functions.sh
@@ -1526,8 +1530,42 @@ prepare_binary() {
 toml_get_raw() {
 	local file="$1"
 	local key="$2"
+	local raw
 	[ -f "$file" ] || return 1
-	sed -n "s/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*//p" "$file" | head -n1
+	raw="$(sed -n "s/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*//p" "$file" | head -n1)"
+	# TOML accepts inline comments and either quoting style. Normalize both so
+	# device_mode values written as `'tun' # comment` are not misread as a
+	# configuration without a virtual device.
+	printf '%s\n' "$raw" | awk '
+		BEGIN { dq = sprintf("%c", 34); sq = sprintf("%c", 39); bs = sprintf("%c", 92) }
+		{
+			out = ""
+			quote = ""
+			escaped = 0
+			for (i = 1; i <= length($0); i++) {
+				c = substr($0, i, 1)
+				if (quote != "") {
+					out = out c
+					if (quote == dq && escaped) {
+						escaped = 0
+					} else if (quote == dq && c == bs) {
+						escaped = 1
+					} else if (c == quote) {
+						quote = ""
+					}
+				} else if (c == dq || c == sq) {
+					quote = c
+					out = out c
+				} else if (c == "#") {
+					break
+				} else {
+					out = out c
+				}
+			}
+			sub(/[ 	]+$/, "", out)
+			print out
+		}
+	'
 }
 
 toml_get_string() {
@@ -1557,6 +1595,35 @@ toml_get_bool() {
 	[ "$raw" = "true" ] && echo "1" || echo "0"
 }
 
+toml_strip_quotes() {
+	printf '%s\n' "$1" | awk '
+		BEGIN { dq = sprintf("%c", 34); sq = sprintf("%c", 39); bs = sprintf("%c", 92) }
+		{
+			s = $0
+			if (length(s) >= 2) {
+				first = substr(s, 1, 1)
+				last = substr(s, length(s), 1)
+				if ((first == dq && last == dq) || (first == sq && last == sq)) {
+					s = substr(s, 2, length(s) - 2)
+				}
+			}
+			print s
+		}
+	'
+}
+
+toml_get_value() {
+	local file="$1"
+	local key="$2"
+	local raw
+
+	# toml_get_raw already removes unquoted inline comments. Strip either TOML
+	# quoting style here so script users can write 'tun' or "tun" identically.
+	raw="$(toml_get_raw "$file" "$key" 2>/dev/null)"
+	raw="$(trim_value "$raw")"
+	toml_strip_quotes "$raw"
+}
+
 toml_validate_client_config() {
 	local file="$1"
 	local network_code server_line
@@ -1566,7 +1633,7 @@ toml_validate_client_config() {
 		return 1
 	}
 
-	network_code="$(trim_value "$(toml_get_string "$file" "network_code")")"
+	network_code="$(trim_value "$(toml_get_value "$file" "network_code")")"
 	server_line="$(trim_value "$(toml_get_raw "$file" "server")")"
 
 	[ -n "$network_code" ] || {
@@ -1609,7 +1676,7 @@ configure_network() {
 	local tun_name="$1"
 	local forward_list="$2"
 	local no_nat="$3"
-	local lan_zone wan_zone enable_ip_forward="${no_nat:-0}"
+	local lan_zone wan_zone
 
 	[ -n "$tun_name" ] || tun_name="vnt-tun"
 	lan_zone="$(find_firewall_zone_name "lan" 2>/dev/null || true)"
@@ -1695,7 +1762,12 @@ configure_network() {
 
 	[ -n "$(uci changes network)" ] && uci commit network && /etc/init.d/network reload >/dev/null 2>&1
 	[ -n "$(uci changes firewall)" ] && uci commit firewall && /etc/init.d/firewall reload >/dev/null 2>&1
-	[ "$enable_ip_forward" = "0" ] || sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1
+	# no_nat=1 disables VNT's built-in NAT and asks the operating system to
+	# perform forwarding instead, so IPv4 forwarding must then be enabled.
+	if [ "${no_nat:-0}" = "1" ]; then
+		sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
+	fi
+	return 0
 }
 
 cleanup_network() {
@@ -1707,6 +1779,191 @@ cleanup_network() {
 	uci_delete_if_exists firewall.wanfwvnt2
 	[ -n "$(uci changes network)" ] && uci commit network && /etc/init.d/network reload >/dev/null 2>&1
 	[ -n "$(uci changes firewall)" ] && uci commit firewall && /etc/init.d/firewall reload >/dev/null 2>&1
+}
+
+is_safe_toml_name() {
+	local name="$1"
+
+	[ -n "$name" ] || return 1
+	case "$name" in
+		*..*|*/*|*\\*) return 1 ;;
+		*.toml) return 0 ;;
+		*) return 1 ;;
+	esac
+}
+
+read_running_config_names() {
+	local line
+
+	[ -f "$WEB_CURRENT_CONFIG_RECORD" ] || return 0
+	while IFS= read -r line || [ -n "$line" ]; do
+		line="$(trim_value "$line")"
+		is_safe_toml_name "$line" || continue
+		[ -f "${WEB_CONFIG_DIR}/${line}" ] || continue
+		[ -L "${WEB_CONFIG_DIR}/${line}" ] && continue
+		printf '%s\n' "$line"
+	done <"$WEB_CURRENT_CONFIG_RECORD"
+}
+
+count_device_configs() {
+	local name mode count=0
+
+	for name in "$@"; do
+		mode="$(trim_value "$(toml_get_value "${WEB_CONFIG_DIR}/${name}" "device_mode")")"
+		[ -n "$mode" ] || mode="tun"
+		case "$mode" in
+			tun|tap) count=$((count + 1)) ;;
+		esac
+	done
+	printf '%s\n' "$count"
+}
+
+detect_tun_device() {
+	local dir name count=0 found=""
+
+	[ -d "$SYS_CLASS_NET" ] || return 1
+	for dir in "$SYS_CLASS_NET"/*; do
+		[ -d "$dir" ] || continue
+		[ -f "$dir/tun_flags" ] || continue
+		name="${dir##*/}"
+		[ -n "$name" ] || continue
+		count=$((count + 1))
+		found="$name"
+	done
+
+	[ "$count" -eq 1 ] || return 1
+	printf '%s\n' "$found"
+	return 0
+}
+
+count_tun_devices() {
+	local dir count=0
+
+	[ -d "$SYS_CLASS_NET" ] || {
+		printf '0\n'
+		return 0
+	}
+	for dir in "$SYS_CLASS_NET"/*; do
+		[ -d "$dir" ] || continue
+		[ -f "$dir/tun_flags" ] || continue
+		count=$((count + 1))
+	done
+	printf '%s\n' "$count"
+}
+
+sync_network_state() {
+	local web_cfg="" forward_list="" device_count name mode tun_name no_nat
+	local enabled=0 first_device_name="" duplicate existing
+	local tun_count=0 existing_device=""
+
+	NETWORK_SYNC_RESULT=""
+	set --
+	while IFS= read -r name; do
+		[ -n "$name" ] || continue
+		duplicate=0
+		for existing in "$@"; do
+			[ "$existing" = "$name" ] && { duplicate=1; break; }
+		done
+		[ "$duplicate" -eq 1 ] && continue
+		set -- "$@" "$name"
+	done <<EOF
+$(read_running_config_names)
+EOF
+
+	# Forwarding policy is plugin-level UCI configuration. Read it before the
+	# record checks so cleanup can still remove stale managed rules.
+	config_load "$CONF"
+	web_cfg="$(get_first_section_id "vnt2_web")"
+	if [ -n "$web_cfg" ]; then
+		config_get_bool enabled "$web_cfg" "enabled" "0"
+		if [ "$enabled" = "1" ]; then
+			prepare_client_network_runtime "$web_cfg" ""
+			forward_list="$VNT2_FORWARD_LIST"
+		fi
+	fi
+
+	if [ "$enabled" != "1" ]; then
+		cleanup_network
+		return 0
+	fi
+
+	device_count="$(count_device_configs "$@")"
+	case "$device_count" in
+		0)
+			cleanup_network
+			return 0
+		;;
+		1) : ;;
+		*)
+			log_web "network sync skipped: ${device_count} active TUN/TAP configurations; keeping no VNT2 interface"
+			cleanup_network
+			NETWORK_SYNC_RESULT="multiple-device-configs"
+			return 0
+		;;
+	esac
+
+	for name in "$@"; do
+		mode="$(trim_value "$(toml_get_value "${WEB_CONFIG_DIR}/${name}" "device_mode")")"
+		[ -n "$mode" ] || mode="tun"
+		case "$mode" in
+			tun|tap)
+				first_device_name="$name"
+				break
+			;;
+		esac
+	done
+
+	tun_name="$(trim_value "$(toml_get_value "${WEB_CONFIG_DIR}/${first_device_name}" "tun_name")")"
+	no_nat="$(toml_get_bool "${WEB_CONFIG_DIR}/${first_device_name}" "no_nat")"
+	[ -n "$no_nat" ] || no_nat="0"
+
+	if [ -z "$tun_name" ]; then
+		tun_name="$(detect_tun_device 2>/dev/null || true)"
+		if [ -z "$tun_name" ]; then
+			tun_count="$(count_tun_devices)"
+			existing_device="$(trim_value "$(uci -q get network.VNT2.device 2>/dev/null || true)")"
+			if [ -n "$existing_device" ] && [ -e "${SYS_CLASS_NET}/${existing_device}/tun_flags" ]; then
+				tun_name="$existing_device"
+				log_web "network sync keeps existing TUN/TAP device ${tun_name} for ${first_device_name}"
+			elif [ "$tun_count" -eq 0 ] && [ -n "$existing_device" ]; then
+				# The managed device can disappear briefly while procd replaces
+				# vnt2_web. Keep the configured interface instead of flapping it.
+				configure_network "$existing_device" "$forward_list" "$no_nat"
+				NETWORK_SYNC_RESULT="kept:${existing_device}"
+				return 0
+			else
+				log_web "network sync could not identify a unique TUN/TAP device for ${first_device_name}; keeping no VNT2 interface"
+				cleanup_network
+				NETWORK_SYNC_RESULT="missing-tun-name"
+				return 0
+			fi
+		else
+			log_web "network sync detected TUN/TAP device ${tun_name} for ${first_device_name}"
+		fi
+	fi
+
+	configure_network "$tun_name" "$forward_list" "$no_nat"
+	NETWORK_SYNC_RESULT="configured:${tun_name}"
+	return 0
+}
+
+sync_network_command() {
+	local rc
+
+	sync_network_state
+	rc=$?
+	if [ "$rc" -eq 0 ]; then
+		if [ -n "$NETWORK_SYNC_RESULT" ]; then
+			log_web "network sync result: ${NETWORK_SYNC_RESULT}"
+		fi
+		return 0
+	fi
+	log_web "network sync failed rc=${rc}"
+	return "$rc"
+}
+
+sync_network() {
+	sync_network_command
 }
 
 ensure_firewall_rule() {
@@ -1765,9 +2022,9 @@ prepare_client_network_runtime() {
 		forward_list="${VNT2_FORWARD_LIST}"
 	fi
 
-	tun_name="$(trim_value "$(toml_get_string "${conf_file}" "tun_name")")"
+	tun_name="$(trim_value "$(toml_get_value "${conf_file}" "tun_name")")"
 	[ -n "$tun_name" ] || tun_name="vnt-tun"
-	device_mode="$(trim_value "$(toml_get_string "${conf_file}" "device_mode")")"
+	device_mode="$(trim_value "$(toml_get_value "${conf_file}" "device_mode")")"
 	[ -n "$device_mode" ] || device_mode="tun"
 	case "$device_mode" in
 		no|tun|tap) : ;;
@@ -1963,6 +2220,7 @@ start_web_instance() {
 	config_get_bool enabled "$cfg" "enabled" "0"
 	if [ "$enabled" != "1" ]; then
 		log_web 'not enabled, skip start'
+		cleanup_network
 		cleanup_web_firewall
 		return 0
 	fi
@@ -2017,6 +2275,8 @@ start_service() {
 	ensure_log_files
 	log_web 'service start flow begin'
 	log_download 'service start flow begin'
+
+	sync_network_command || rc=1
 
 	config_load "${CONF}"
 	web_cfg="$(get_first_section_id "vnt2_web")"
