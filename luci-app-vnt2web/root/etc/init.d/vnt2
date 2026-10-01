@@ -30,6 +30,7 @@ RESTART_PENDING_FILE="/tmp/vnt2-restart.pending"
 VNT2_FORWARD_LIST=""
 NETWORK_SYNC_RESULT=""
 SYS_CLASS_NET="${VNT2_SYS_CLASS_NET:-/sys/class/net}"
+VNT2_DEFAULT_TUN_NAME="${VNT2_DEFAULT_TUN_NAME:-vnt-tun}"
 
 INSTALL_BIN_DIR="/usr/bin"
 . /lib/functions.sh
@@ -1854,7 +1855,8 @@ count_tun_devices() {
 sync_network_state() {
 	local web_cfg="" forward_list="" device_count name mode tun_name no_nat
 	local enabled=0 first_device_name="" duplicate existing
-	local tun_count=0 existing_device=""
+	local tun_count=0 existing_device="" recorded_count=0
+	local default_tun_name="${VNT2_DEFAULT_TUN_NAME:-vnt-tun}"
 
 	NETWORK_SYNC_RESULT=""
 	set --
@@ -1888,9 +1890,22 @@ EOF
 	fi
 
 	device_count="$(count_device_configs "$@")"
+	recorded_count="$(read_running_config_names | wc -l | tr -d '[:space:]')"
+	[ -n "$recorded_count" ] || recorded_count=0
 	case "$device_count" in
 		0)
-			cleanup_network
+			# No runtime record yet (or all records select device_mode=no).
+			# Keep the managed interface visible while the Web service is enabled;
+			# the worker replaces the placeholder with the real TUN/TAP device
+			# as soon as the core creates it.
+			if [ "$recorded_count" -gt 0 ]; then
+				log_web "network sync has no active TUN/TAP configuration; removing VNT2 interface"
+				cleanup_network
+				NETWORK_SYNC_RESULT="no-device-mode"
+				return 0
+			fi
+			configure_network "$default_tun_name" "$forward_list" "0"
+			NETWORK_SYNC_RESULT="placeholder:${default_tun_name}"
 			return 0
 		;;
 		1) : ;;
@@ -1932,10 +1947,11 @@ EOF
 				NETWORK_SYNC_RESULT="kept:${existing_device}"
 				return 0
 			else
-				log_web "network sync could not identify a unique TUN/TAP device for ${first_device_name}; keeping no VNT2 interface"
-				cleanup_network
-				NETWORK_SYNC_RESULT="missing-tun-name"
-				return 0
+				# Keep the managed interface visible even before the core has
+				# created the device. The worker will update the device name once
+				# a unique TUN/TAP interface appears.
+				log_web "network sync has no runtime TUN/TAP device for ${first_device_name}; using placeholder ${default_tun_name}"
+				tun_name="$default_tun_name"
 			fi
 		else
 			log_web "network sync detected TUN/TAP device ${tun_name} for ${first_device_name}"

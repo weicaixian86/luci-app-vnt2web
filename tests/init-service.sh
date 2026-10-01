@@ -338,9 +338,10 @@ test_network_sync_state() {
 
 	: >"$calls"
 	sync_network_state
-	[ "$(grep -c '^cleanup_network$' "$calls" || true)" -eq 1 ] || \
-		fail "empty running record did not clean the managed network"
-	[ -z "$NETWORK_SYNC_RESULT" ] || fail "empty running record produced an unexpected sync result"
+	grep -Fqx 'configure_network vnt-tun vnt2fwlan vnt2fwwan lanfwvnt2 0' "$calls" || \
+		fail "empty running record did not create the placeholder managed network"
+	[ "$NETWORK_SYNC_RESULT" = "placeholder:vnt-tun" ] || \
+		fail "empty running record did not report the placeholder result"
 
 	printf '%s\n' 'disabled.toml' >"$WEB_CURRENT_CONFIG_RECORD"
 	printf '%s\n' 'device_mode = "no"' >"$config_dir/disabled.toml"
@@ -384,10 +385,10 @@ test_network_sync_state() {
 	printf '%s\n' 'device_mode = "tun"' >"$config_dir/missing-name.toml"
 	: >"$calls"
 	sync_network_state
-	[ "$(grep -c '^cleanup_network$' "$calls" || true)" -eq 1 ] || \
-		fail "missing tun_name without a discoverable device did not clean the managed network"
-	[ "$NETWORK_SYNC_RESULT" = "missing-tun-name" ] || \
-		fail "missing tun_name did not report a diagnostic result"
+	grep -Fqx 'configure_network vnt-tun vnt2fwlan vnt2fwwan lanfwvnt2 0' "$calls" || \
+		fail "missing tun_name without a discoverable device did not create the placeholder interface"
+	[ "$NETWORK_SYNC_RESULT" = "configured:vnt-tun" ] || \
+		fail "missing tun_name did not report the configured placeholder result"
 
 	mkdir -p "$SYS_CLASS_NET/tun0"
 	: >"$SYS_CLASS_NET/tun0/tun_flags"

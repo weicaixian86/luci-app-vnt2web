@@ -8,7 +8,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-vnt2web
 PKG_VERSION:=2.0.54
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 LUCI_TITLE:=luci-app-vnt2web - LuCI support for VNT2 Web
 LUCI_DESCRIPTION:=luci-app-vnt2web OpenWrt LuCI application for managing the VNT2 Web client

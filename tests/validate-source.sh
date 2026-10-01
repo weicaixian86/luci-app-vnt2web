@@ -58,8 +58,8 @@ check_project_contracts() {
 		fail "package name is not luci-app-vnt2web"
 	grep -Fq 'PKG_VERSION:=2.0.54' "$SOURCE_DIR/Makefile" ||
 		fail "package version is not 2.0.54"
-	grep -Fq 'PKG_RELEASE:=1' "$SOURCE_DIR/Makefile" ||
-		fail "package release is not 1"
+	grep -Fq 'PKG_RELEASE:=2' "$SOURCE_DIR/Makefile" ||
+		fail "package release is not 2"
 	grep -Fq 'VNT2_FIXED_REPO="vnt-dev/vnt"' "$SOURCE_DIR/root/etc/init.d/vnt2" ||
 		fail "automatic download repository is not fixed to vnt-dev/vnt"
 	grep -Fq 'VNT2_FIXED_VERSION="2.0.10"' "$SOURCE_DIR/root/etc/init.d/vnt2" ||
