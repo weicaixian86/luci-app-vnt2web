@@ -84,8 +84,14 @@ check_project_contracts() {
 		fail "obsolete version worker is still packaged"
 	grep -Fq 'WEB_CONFIG_DIR="/vnt_config"' "$SOURCE_DIR/root/etc/init.d/vnt2" ||
 		fail "Web config directory is not fixed to /vnt_config"
-	grep -Fq 'WEB_CURRENT_CONFIG_RECORD="${WEB_CONFIG_DIR}/.vnt_current_config.txt"' "$SOURCE_DIR/root/etc/init.d/vnt2" ||
+	grep -Fq 'WEB_CURRENT_CONFIG_RECORD="${WEB_CONFIG_DIR}/vnt_current_config.txt"' "$SOURCE_DIR/root/etc/init.d/vnt2" ||
 		fail "running config record is not kept in /vnt_config"
+	grep -Fq '"$NETWORK_CONFIG_DIR/vnt_current_config.txt"' "$SOURCE_DIR/root/usr/libexec/vnt2/restart-worker" ||
+		fail "restart worker does not monitor the client running config record"
+	obsolete_record='.vnt_current_config''.'.'txt'
+	if grep -R -Fq "$obsolete_record" "$SOURCE_DIR"; then
+		fail "obsolete hidden running config record path remains in plugin source"
+	fi
 	grep -Fq 'translate("Web配置文件路径")' "$SOURCE_DIR/luasrc/model/cbi/vnt2.lua" ||
 		fail "LuCI does not display the Web configuration path label"
 	grep -Fq 'return "/vnt_config/*.toml"' "$SOURCE_DIR/luasrc/model/cbi/vnt2.lua" ||
@@ -104,9 +110,9 @@ check_project_contracts() {
 	fi
 	grep -Fq 'option web_token' "$SOURCE_DIR/root/etc/config/vnt2" ||
 		fail "default config does not define web_token"
-	grep -Fq 'procd_set_param command /bin/sh -c "exec \"${web_bin}\" --addr \"${web_addr}\" --token \"${web_token}\"' \
+	grep -Fq 'procd_set_param command /bin/sh -c "cd / && exec \"${web_bin}\" --addr \"${web_addr}\" --token \"${web_token}\"' \
 		"$SOURCE_DIR/root/etc/init.d/vnt2" ||
-		fail "init script does not pass web_token to vnt2_web"
+		fail "init script does not start vnt2_web from the client config root"
 	if grep -Fq -- '--conf' "$SOURCE_DIR/root/etc/init.d/vnt2"; then
 		fail "OpenWrt Web service still starts a default TOML through --conf"
 	fi

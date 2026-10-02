@@ -107,8 +107,8 @@ test_web_token_support() {
 
 	grep -Fq 'generate_web_token()' "$INIT_SCRIPT" || fail "init does not generate a missing token"
 	grep -Fq 'uci -q set "${CONF}.${cfg}.web_token=${token}"' "$INIT_SCRIPT" || fail "init does not persist a generated token"
-	grep -Fq 'procd_set_param command /bin/sh -c "exec \"${web_bin}\" --addr \"${web_addr}\" --token \"${web_token}\"' \
-		"$INIT_SCRIPT" || fail "init does not pass the token to vnt2_web"
+	grep -Fq 'procd_set_param command /bin/sh -c "cd / && exec \"${web_bin}\" --addr \"${web_addr}\" --token \"${web_token}\"' \
+		"$INIT_SCRIPT" || fail "init does not start vnt2_web from the client config root"
 	grep -Fq '*[!0-9A-Za-z._~-]*' "$INIT_SCRIPT" || fail "init does not reject non URL-safe token characters"
 	grep -Fq '${#token}" -eq 6' "$INIT_SCRIPT" || fail "init does not enforce a 6-character token"
 	grep -Fq 'field.type = "text";' "$TOKEN_VIEW" || fail "generated token is not shown after refresh"
@@ -330,7 +330,7 @@ test_network_sync_state() {
 		return 1
 	}
 	WEB_CONFIG_DIR="$config_dir"
-	WEB_CURRENT_CONFIG_RECORD="$config_dir/.vnt_current_config.txt"
+	WEB_CURRENT_CONFIG_RECORD="$config_dir/vnt_current_config.txt"
 	SYS_CLASS_NET="$dir/sys-class-net"
 	mkdir -p "$SYS_CLASS_NET"
 	CONF=vnt2
@@ -703,7 +703,7 @@ test_managed_firewall_mode_transitions() {
 test_web_config_directory_and_empty_default() {
 	grep -Fq 'WEB_CONFIG_DIR="/vnt_config"' "$INIT_SCRIPT" || \
 		fail "Web config directory is not fixed to /vnt_config"
-	grep -Fq 'WEB_CURRENT_CONFIG_RECORD="${WEB_CONFIG_DIR}/.vnt_current_config.txt"' "$INIT_SCRIPT" || \
+	grep -Fq 'WEB_CURRENT_CONFIG_RECORD="${WEB_CONFIG_DIR}/vnt_current_config.txt"' "$INIT_SCRIPT" || \
 		fail "running config record is not kept in /vnt_config"
 	grep -Fq 'translate("Web配置文件路径")' "$CBI_SCRIPT" || \
 		fail "LuCI does not display the Web configuration path label"
@@ -727,6 +727,11 @@ test_web_config_directory_and_empty_default() {
 	grep -Fq 'chmod 700 "${WEB_CONFIG_DIR}"' "$INIT_SCRIPT" || fail "Web config directory is not private"
 	grep -Fq 'VNT_CONFIG_DIR="${WEB_CONFIG_DIR}"' "$INIT_SCRIPT" || fail "vnt2_web does not receive its config directory"
 	grep -Fq 'VNT_CURRENT_CONFIG_RECORD="${WEB_CURRENT_CONFIG_RECORD}"' "$INIT_SCRIPT" || fail "vnt2_web does not receive its running config record path"
+	grep -Fq '"$NETWORK_CONFIG_DIR/vnt_current_config.txt"' "$WORKER_SCRIPT" || fail "restart worker does not monitor the client running config record"
+	obsolete_record='.vnt_current_config''.'.'txt'
+	if grep -Fq "$obsolete_record" "$INIT_SCRIPT" "$WORKER_SCRIPT"; then
+		fail "obsolete hidden running config record path remains in plugin runtime"
+	fi
 	if grep -Fq -- '--conf' "$INIT_SCRIPT"; then
 		fail "OpenWrt Web service still starts a default TOML through --conf"
 	fi

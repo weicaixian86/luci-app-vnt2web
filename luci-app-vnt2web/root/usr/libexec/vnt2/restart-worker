@@ -49,7 +49,7 @@ read_network_snapshot() {
 	local file name size mtime checksum dir flags address ifindex
 
 	if [ -d "$NETWORK_CONFIG_DIR" ]; then
-		for file in "$NETWORK_CONFIG_DIR"/*.toml "$NETWORK_CONFIG_DIR/.vnt_current_config.txt"; do
+		for file in "$NETWORK_CONFIG_DIR"/*.toml "$NETWORK_CONFIG_DIR/vnt_current_config.txt"; do
 			[ -f "$file" ] || continue
 			[ -L "$file" ] && continue
 			name="${file##*/}"
