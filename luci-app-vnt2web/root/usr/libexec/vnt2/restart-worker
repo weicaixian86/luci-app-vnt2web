@@ -10,8 +10,11 @@ NETWORK_SYNC_COMMAND="${VNT2_NETWORK_SYNC_COMMAND:-/etc/init.d/vnt2 sync_network
 SYS_CLASS_NET="${VNT2_SYS_CLASS_NET:-/sys/class/net}"
 RESTART_DELAY="${VNT2_RESTART_DELAY:-15}"
 POLL_INTERVAL="${VNT2_RESTART_POLL_INTERVAL:-1}"
+NETWORK_RETRY_INTERVAL="${VNT2_NETWORK_RETRY_INTERVAL:-5}"
 NETWORK_SNAPSHOT=""
 NETWORK_SNAPSHOT_READY=0
+NETWORK_SYNC_FAILED=0
+NETWORK_LAST_SYNC=0
 
 log_worker() {
 	printf '%s download : %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >>"${DOWNLOAD_LOG}"
@@ -96,20 +99,35 @@ read_network_snapshot() {
 }
 
 sync_network_if_changed() {
-	local snapshot rc
+	local snapshot rc now elapsed
 
 	snapshot="$(read_network_snapshot)"
-	if [ "$NETWORK_SNAPSHOT_READY" -eq 1 ] && [ "$snapshot" = "$NETWORK_SNAPSHOT" ]; then
+	now="$(date +%s)"
+	case "$NETWORK_RETRY_INTERVAL" in
+		''|*[!0-9]*) NETWORK_RETRY_INTERVAL=5 ;;
+	esac
+
+	if [ "$NETWORK_SNAPSHOT_READY" -eq 1 ] && [ "$snapshot" = "$NETWORK_SNAPSHOT" ] && [ "$NETWORK_SYNC_FAILED" -eq 0 ]; then
 		return 0
 	fi
+	if [ "$NETWORK_SNAPSHOT_READY" -eq 1 ] && [ "$snapshot" = "$NETWORK_SNAPSHOT" ] && [ "$NETWORK_SYNC_FAILED" -eq 1 ]; then
+		elapsed=$((now - NETWORK_LAST_SYNC))
+		[ "$elapsed" -lt "$NETWORK_RETRY_INTERVAL" ] && return 0
+	fi
+
 	NETWORK_SNAPSHOT="$snapshot"
-	NETWORK_SNAPSHOT_READY=1
+	NETWORK_LAST_SYNC="$now"
 	# shellcheck disable=SC2086
 	$NETWORK_SYNC_COMMAND </dev/null >/dev/null 2>&1
 	rc=$?
 	if [ "$rc" -ne 0 ]; then
+		NETWORK_SNAPSHOT_READY=1
+		NETWORK_SYNC_FAILED=1
 		log_worker "network sync failed rc=${rc}"
+		return 0
 	fi
+	NETWORK_SNAPSHOT_READY=1
+	NETWORK_SYNC_FAILED=0
 	return 0
 }
 

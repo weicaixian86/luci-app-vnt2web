@@ -313,6 +313,7 @@ test_network_sync_state() {
 	load_function read_tun_device_type
 	load_function device_matches_mode
 	load_function device_has_ipv4_address
+	load_function device_has_any_ipv4_address
 	load_function detect_configured_tun_device
 	load_function sync_network_state
 	load_function cleanup_network
@@ -356,10 +357,26 @@ test_network_sync_state() {
 	printf '%s\n' 'tun_name = "vnt2tun"' 'device_mode = "tun"' >"$config_dir/active.toml"
 	mkdir -p "$SYS_CLASS_NET/vnt2tun"
 	printf '0x1001\n' >"$SYS_CLASS_NET/vnt2tun/tun_flags"
+	device_has_any_ipv4_address() { [ "${MOCK_READY_IPV4:-1}" = "1" ]; }
+	MOCK_READY_IPV4=0
+	: >"$calls"
+	sync_network_state
+	grep -Fqx 'cleanup_network' "$calls" || fail "addressless TUN was bound before it was ready"
+	[ "$NETWORK_SYNC_RESULT" = "missing-runtime-address" ] || \
+		fail "addressless TUN did not report a diagnostic result"
+	MOCK_READY_IPV4=1
 	: >"$calls"
 	sync_network_state
 	grep -Fqx 'configure_network vnt2tun vnt2fwlan vnt2fwwan lanfwvnt2 0' "$calls" || \
 		fail "active TUN configuration did not create the managed network with forwarding rules"
+	configure_network() { printf 'configure_network %s %s %s\n' "$1" "$2" "$3" >>"$calls"; return 1; }
+	: >"$calls"
+	if sync_network_state; then
+		fail "network sync succeeded after configure_network failed"
+	fi
+	[ "$NETWORK_SYNC_RESULT" = "configure-failed:vnt2tun" ] || \
+		fail "configure_network failure did not report a diagnostic result"
+	configure_network() { printf 'configure_network %s %s %s\n' "$1" "$2" "$3" >>"$calls"; }
 
 	printf '%s\n' 'tap.toml' >"$WEB_CURRENT_CONFIG_RECORD"
 	printf '%s\n' 'tun_name = "vnt2tap"' 'device_mode = "tap"' >"$config_dir/tap.toml"
@@ -521,6 +538,8 @@ EOF
 	sync_network_state
 	grep -Fqx 'cleanup_network' "$calls" || fail "duplicate IP devices were bound arbitrarily"
 	load_function device_has_ipv4_address
+	load_function device_has_any_ipv4_address
+	unset MOCK_READY_IPV4
 	unset MOCK_ADDRESS_DEVICE MOCK_EXISTING_DEVICE
 	rm -rf "$SYS_CLASS_NET/vnt2tap"
 	rm -rf "$SYS_CLASS_NET/tun0" "$SYS_CLASS_NET/tap0"
@@ -624,6 +643,8 @@ test_no_nat_enables_ipv4_forwarding() {
 	load_function configure_network
 	uci_set_if_changed() { :; }
 	uci_delete_if_exists() { :; }
+	apply_network_config_changes() { :; }
+	apply_firewall_config_changes() { :; }
 	find_firewall_zone_name() { printf '%s\n' "$1"; }
 	uci() {
 		case "${1:-}" in
@@ -655,6 +676,8 @@ test_managed_firewall_mode_transitions() {
 
 	load_function uci_set_if_changed
 	load_function uci_delete_if_exists
+	load_function apply_network_config_changes
+	load_function apply_firewall_config_changes
 	load_function configure_network
 	load_function cleanup_network
 	find_firewall_zone_name() { printf '%s\n' "$1"; }

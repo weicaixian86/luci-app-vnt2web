@@ -151,6 +151,7 @@ EOF
 	VNT2_NETWORK_RECORD_FILE="$dir/vnt_current_config.txt" \
 	VNT2_SYS_CLASS_NET="$dir/sys-net" \
 	VNT2_NETWORK_SYNC_COMMAND="$dir/mock-sync" \
+	VNT2_NETWORK_RETRY_INTERVAL=60 \
 	VNT2_RESTART_DELAY=1 \
 	VNT2_RESTART_POLL_INTERVAL=1 \
 		sh "$WORKER" &
@@ -187,7 +188,47 @@ EOF
 	printf 'PASS: config changes trigger network synchronization without blocking restarts\n'
 }
 
+test_failed_network_sync_retries_same_snapshot() {
+	dir="$(mktemp -d)"
+	trap 'stop_worker "$dir"; rm -rf "$dir"' EXIT INT TERM
+	mkdir -p "$dir/config" "$dir/sys-net"
+
+	cat >"$dir/mock-sync" <<'EOF'
+#!/bin/sh
+count="$(cat "$MOCK_STATE_DIR/sync-count" 2>/dev/null || printf '0')"
+count=$((count + 1))
+printf '%s\n' "$count" >"$MOCK_STATE_DIR/sync-count"
+exit 1
+EOF
+	chmod 0755 "$dir/mock-sync"
+
+	MOCK_STATE_DIR="$dir" \
+	VNT2_RESTART_PENDING_FILE="$dir/pending" \
+	VNT2_RESTART_CLAIMED_FILE="$dir/claimed" \
+	VNT2_RESTART_LOG_FILE="$dir/log" \
+	VNT2_RESTART_COMMAND=/usr/bin/true \
+	VNT2_NETWORK_CONFIG_DIR="$dir/config" \
+	VNT2_NETWORK_RECORD_FILE="$dir/vnt_current_config.txt" \
+	VNT2_SYS_CLASS_NET="$dir/sys-net" \
+	VNT2_NETWORK_SYNC_COMMAND="$dir/mock-sync" \
+	VNT2_NETWORK_RETRY_INTERVAL=1 \
+	VNT2_RESTART_DELAY=1 \
+	VNT2_RESTART_POLL_INTERVAL=1 \
+		sh "$WORKER" &
+	echo "$!" >"$dir/pid"
+
+	wait_for_count "$dir/sync-count" 1 10 || fail "initial failed network sync did not run"
+	wait_for_count "$dir/sync-count" 2 10 || fail "failed network sync was not retried for an unchanged snapshot"
+	grep -Fq 'network sync failed' "$dir/log" || fail "network synchronization retry failure was not logged"
+
+	stop_worker "$dir"
+	rm -rf "$dir"
+	trap - EXIT INT TERM
+	printf 'PASS: failed network synchronization is retried for an unchanged snapshot\n'
+}
+
 test_debounce
 test_request_during_restart
 test_network_config_changes_sync
+test_failed_network_sync_retries_same_snapshot
 printf 'restart-worker tests passed\n'

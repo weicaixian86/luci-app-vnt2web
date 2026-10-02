@@ -1674,6 +1674,49 @@ uci_delete_if_exists() {
 	uci -q delete "$key"
 }
 
+apply_network_config_changes() {
+	local action="${1:-reload}"
+	local changed=0
+	local run_ifup=0
+
+	[ -n "$(uci changes network)" ] && changed=1
+	if [ "$changed" -eq 1 ]; then
+		uci commit network || return 1
+	fi
+
+	case "$action" in
+		ifup)
+			run_ifup="$changed"
+			if [ "$run_ifup" -eq 0 ] && command -v ifstatus >/dev/null 2>&1; then
+				ifstatus VNT2 2>/dev/null | grep -q '"up":[[:space:]]*true' || run_ifup=1
+			fi
+			[ "$run_ifup" -eq 1 ] || return 0
+			if command -v ifup >/dev/null 2>&1; then
+				ifup VNT2 >/dev/null 2>&1 || return 1
+			elif [ -x /sbin/ifup ]; then
+				/sbin/ifup VNT2 >/dev/null 2>&1 || return 1
+			elif [ -x /etc/init.d/network ]; then
+				/etc/init.d/network reload >/dev/null 2>&1 || return 1
+			fi
+		;;
+		reload)
+			if [ "$changed" -eq 1 ] && [ -x /etc/init.d/network ]; then
+				/etc/init.d/network reload >/dev/null 2>&1 || return 1
+			fi
+		;;
+		none) : ;;
+		*) return 1 ;;
+	esac
+	return 0
+}
+
+apply_firewall_config_changes() {
+	[ -n "$(uci changes firewall)" ] || return 0
+	uci commit firewall || return 1
+	[ -x /etc/init.d/firewall ] || return 0
+	/etc/init.d/firewall reload >/dev/null 2>&1 || return 1
+}
+
 configure_network() {
 	local tun_name="$1"
 	local forward_list="$2"
@@ -1684,86 +1727,86 @@ configure_network() {
 	lan_zone="$(find_firewall_zone_name "lan" 2>/dev/null || true)"
 	wan_zone="$(find_firewall_zone_name "wan" 2>/dev/null || true)"
 
-	uci_set_if_changed network.VNT2 'interface'
-	uci_set_if_changed network.VNT2.proto 'none'
-	uci_set_if_changed network.VNT2.device "$tun_name"
-	uci_set_if_changed network.VNT2.ifname "$tun_name"
+	uci_set_if_changed network.VNT2 'interface' || return 1
+	uci_set_if_changed network.VNT2.proto 'none' || return 1
+	uci_set_if_changed network.VNT2.device "$tun_name" || return 1
+	uci_set_if_changed network.VNT2.ifname "$tun_name" || return 1
 
-	uci_set_if_changed firewall.vnt2zone 'zone'
-	uci_set_if_changed firewall.vnt2zone.name 'VNT2'
-	uci_set_if_changed firewall.vnt2zone.input 'ACCEPT'
-	uci_set_if_changed firewall.vnt2zone.output 'ACCEPT'
-	uci_set_if_changed firewall.vnt2zone.forward 'ACCEPT'
+	uci_set_if_changed firewall.vnt2zone 'zone' || return 1
+	uci_set_if_changed firewall.vnt2zone.name 'VNT2' || return 1
+	uci_set_if_changed firewall.vnt2zone.input 'ACCEPT' || return 1
+	uci_set_if_changed firewall.vnt2zone.output 'ACCEPT' || return 1
+	uci_set_if_changed firewall.vnt2zone.forward 'ACCEPT' || return 1
 	if [ "${no_nat:-0}" = "1" ]; then
-		uci_set_if_changed firewall.vnt2zone.masq '0'
+		uci_set_if_changed firewall.vnt2zone.masq '0' || return 1
 	else
-		uci_set_if_changed firewall.vnt2zone.masq '1'
+		uci_set_if_changed firewall.vnt2zone.masq '1' || return 1
 	fi
-	uci_set_if_changed firewall.vnt2zone.mtu_fix '1'
-	uci_set_if_changed firewall.vnt2zone.network 'VNT2'
+	uci_set_if_changed firewall.vnt2zone.mtu_fix '1' || return 1
+	uci_set_if_changed firewall.vnt2zone.network 'VNT2' || return 1
 
 	case " $forward_list " in
 		*" vnt2fwlan "*)
 			if [ -n "$lan_zone" ]; then
-				uci_set_if_changed firewall.vnt2fwlan 'forwarding'
-				uci_set_if_changed firewall.vnt2fwlan.src 'VNT2'
-				uci_set_if_changed firewall.vnt2fwlan.dest "${lan_zone}"
+				uci_set_if_changed firewall.vnt2fwlan 'forwarding' || return 1
+				uci_set_if_changed firewall.vnt2fwlan.src 'VNT2' || return 1
+				uci_set_if_changed firewall.vnt2fwlan.dest "${lan_zone}" || return 1
 			else
-				uci_delete_if_exists firewall.vnt2fwlan
+				uci_delete_if_exists firewall.vnt2fwlan || return 1
 			fi
 		;;
 		*)
-			uci_delete_if_exists firewall.vnt2fwlan
+			uci_delete_if_exists firewall.vnt2fwlan || return 1
 		;;
 	esac
 
 	case " $forward_list " in
 		*" vnt2fwwan "*)
 			if [ -n "$wan_zone" ]; then
-				uci_set_if_changed firewall.vnt2fwwan 'forwarding'
-				uci_set_if_changed firewall.vnt2fwwan.src 'VNT2'
-				uci_set_if_changed firewall.vnt2fwwan.dest "${wan_zone}"
+				uci_set_if_changed firewall.vnt2fwwan 'forwarding' || return 1
+				uci_set_if_changed firewall.vnt2fwwan.src 'VNT2' || return 1
+				uci_set_if_changed firewall.vnt2fwwan.dest "${wan_zone}" || return 1
 			else
-				uci_delete_if_exists firewall.vnt2fwwan
+				uci_delete_if_exists firewall.vnt2fwwan || return 1
 			fi
 		;;
 		*)
-			uci_delete_if_exists firewall.vnt2fwwan
+			uci_delete_if_exists firewall.vnt2fwwan || return 1
 		;;
 	esac
 
 	case " $forward_list " in
 		*" lanfwvnt2 "*)
 			if [ -n "$lan_zone" ]; then
-				uci_set_if_changed firewall.lanfwvnt2 'forwarding'
-				uci_set_if_changed firewall.lanfwvnt2.src "${lan_zone}"
-				uci_set_if_changed firewall.lanfwvnt2.dest 'VNT2'
+				uci_set_if_changed firewall.lanfwvnt2 'forwarding' || return 1
+				uci_set_if_changed firewall.lanfwvnt2.src "${lan_zone}" || return 1
+				uci_set_if_changed firewall.lanfwvnt2.dest 'VNT2' || return 1
 			else
-				uci_delete_if_exists firewall.lanfwvnt2
+				uci_delete_if_exists firewall.lanfwvnt2 || return 1
 			fi
 		;;
 		*)
-			uci_delete_if_exists firewall.lanfwvnt2
+			uci_delete_if_exists firewall.lanfwvnt2 || return 1
 		;;
 	esac
 
 	case " $forward_list " in
 		*" wanfwvnt2 "*)
 			if [ -n "$wan_zone" ]; then
-				uci_set_if_changed firewall.wanfwvnt2 'forwarding'
-				uci_set_if_changed firewall.wanfwvnt2.src "${wan_zone}"
-				uci_set_if_changed firewall.wanfwvnt2.dest 'VNT2'
+				uci_set_if_changed firewall.wanfwvnt2 'forwarding' || return 1
+				uci_set_if_changed firewall.wanfwvnt2.src "${wan_zone}" || return 1
+				uci_set_if_changed firewall.wanfwvnt2.dest 'VNT2' || return 1
 			else
-				uci_delete_if_exists firewall.wanfwvnt2
+				uci_delete_if_exists firewall.wanfwvnt2 || return 1
 			fi
 		;;
 		*)
-			uci_delete_if_exists firewall.wanfwvnt2
+			uci_delete_if_exists firewall.wanfwvnt2 || return 1
 		;;
 	esac
 
-	[ -n "$(uci changes network)" ] && uci commit network && /etc/init.d/network reload >/dev/null 2>&1
-	[ -n "$(uci changes firewall)" ] && uci commit firewall && /etc/init.d/firewall reload >/dev/null 2>&1
+	apply_network_config_changes ifup || return 1
+	apply_firewall_config_changes || return 1
 	# no_nat=1 disables VNT's built-in NAT and asks the operating system to
 	# perform forwarding instead, so IPv4 forwarding must then be enabled.
 	if [ "${no_nat:-0}" = "1" ]; then
@@ -1773,14 +1816,21 @@ configure_network() {
 }
 
 cleanup_network() {
-	uci_delete_if_exists network.VNT2
-	uci_delete_if_exists firewall.vnt2zone
-	uci_delete_if_exists firewall.vnt2fwlan
-	uci_delete_if_exists firewall.vnt2fwwan
-	uci_delete_if_exists firewall.lanfwvnt2
-	uci_delete_if_exists firewall.wanfwvnt2
-	[ -n "$(uci changes network)" ] && uci commit network && /etc/init.d/network reload >/dev/null 2>&1
-	[ -n "$(uci changes firewall)" ] && uci commit firewall && /etc/init.d/firewall reload >/dev/null 2>&1
+	if uci -q get network.VNT2 >/dev/null 2>&1; then
+		if command -v ifdown >/dev/null 2>&1; then
+			ifdown VNT2 >/dev/null 2>&1 || true
+		elif [ -x /sbin/ifdown ]; then
+			/sbin/ifdown VNT2 >/dev/null 2>&1 || true
+		fi
+	fi
+	uci_delete_if_exists network.VNT2 || return 1
+	uci_delete_if_exists firewall.vnt2zone || return 1
+	uci_delete_if_exists firewall.vnt2fwlan || return 1
+	uci_delete_if_exists firewall.vnt2fwwan || return 1
+	uci_delete_if_exists firewall.lanfwvnt2 || return 1
+	uci_delete_if_exists firewall.wanfwvnt2 || return 1
+	apply_network_config_changes none || return 1
+	apply_firewall_config_changes || return 1
 	return 0
 }
 
@@ -1940,6 +1990,28 @@ device_has_ipv4_address() {
 	return 1
 }
 
+device_has_any_ipv4_address() {
+	local device="$1"
+	local output=""
+
+	[ -n "$device" ] || return 1
+	if command -v ip >/dev/null 2>&1; then
+		output="$(ip -4 -o addr show dev "$device" 2>/dev/null || true)"
+		[ -n "$output" ] && return 0
+		return 1
+	fi
+	if command -v ifconfig >/dev/null 2>&1; then
+		output="$(ifconfig "$device" 2>/dev/null || true)"
+		case "$output" in
+			*"inet addr:"*|*" inet "*) return 0 ;;
+		esac
+		return 1
+	fi
+	# Keep compatibility with minimal systems where address inspection is not
+	# available; device type checks still prevent placeholder bindings.
+	return 0
+}
+
 detect_configured_tun_device() {
 	local mode="$1"
 	local address="$2"
@@ -2036,21 +2108,21 @@ EOF
 	fi
 
 	if [ "$enabled" != "1" ]; then
-		cleanup_network
+		cleanup_network || return 1
 		return 0
 	fi
 
 	device_count="$(count_device_configs "$@")"
 	case "$device_count" in
 		0)
-			cleanup_network
+			cleanup_network || return 1
 			NETWORK_SYNC_RESULT="no-device-mode"
 			return 0
 		;;
 		1) : ;;
 		*)
 			log_web "network sync skipped: ${device_count} active TUN/TAP configurations; keeping no VNT2 interface"
-			cleanup_network
+			cleanup_network || return 1
 			NETWORK_SYNC_RESULT="multiple-device-configs"
 			return 0
 		;;
@@ -2095,12 +2167,21 @@ EOF
 
 	if [ -z "$tun_name" ]; then
 		log_web "network sync waiting for ${mode} device for ${first_device_name}"
-		cleanup_network
+		cleanup_network || return 1
 		NETWORK_SYNC_RESULT="missing-runtime-device"
 		return 0
 	fi
+	if ! device_has_any_ipv4_address "$tun_name"; then
+		log_web "network sync waiting for IPv4 address on ${tun_name}"
+		cleanup_network || return 1
+		NETWORK_SYNC_RESULT="missing-runtime-address"
+		return 0
+	fi
 
-	configure_network "$tun_name" "$forward_list" "$no_nat"
+	if ! configure_network "$tun_name" "$forward_list" "$no_nat"; then
+		NETWORK_SYNC_RESULT="configure-failed:${tun_name}"
+		return 1
+	fi
 	NETWORK_SYNC_RESULT="configured:${tun_name}"
 	return 0
 }
