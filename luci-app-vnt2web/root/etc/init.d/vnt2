@@ -30,7 +30,6 @@ RESTART_PENDING_FILE="/tmp/vnt2-restart.pending"
 VNT2_FORWARD_LIST=""
 NETWORK_SYNC_RESULT=""
 SYS_CLASS_NET="${VNT2_SYS_CLASS_NET:-/sys/class/net}"
-VNT2_DEFAULT_TUN_NAME="${VNT2_DEFAULT_TUN_NAME:-vnt-tun}"
 
 INSTALL_BIN_DIR="/usr/bin"
 . /lib/functions.sh
@@ -1679,7 +1678,7 @@ configure_network() {
 	local no_nat="$3"
 	local lan_zone wan_zone
 
-	[ -n "$tun_name" ] || tun_name="vnt-tun"
+	[ -n "$tun_name" ] || return 1
 	lan_zone="$(find_firewall_zone_name "lan" 2>/dev/null || true)"
 	wan_zone="$(find_firewall_zone_name "wan" 2>/dev/null || true)"
 
@@ -1780,6 +1779,7 @@ cleanup_network() {
 	uci_delete_if_exists firewall.wanfwvnt2
 	[ -n "$(uci changes network)" ] && uci commit network && /etc/init.d/network reload >/dev/null 2>&1
 	[ -n "$(uci changes firewall)" ] && uci commit firewall && /etc/init.d/firewall reload >/dev/null 2>&1
+	return 0
 }
 
 is_safe_toml_name() {
@@ -1819,44 +1819,116 @@ count_device_configs() {
 	printf '%s\n' "$count"
 }
 
-detect_tun_device() {
-	local dir name count=0 found=""
+device_mode_matches_tun_flags() {
+	local mode="$1"
+	local flags="$2"
+
+	flags="$(trim_value "$flags")"
+	case "$flags" in
+		0x*|0X*)
+			case "${flags#??}" in ''|*[!0-9a-fA-F]*) return 1 ;; esac
+		;;
+		''|*[!0-9]*) return 1 ;;
+	esac
+	[ -n "$flags" ] || return 1
+
+	case "$mode" in
+		tun) [ $((flags & 3)) -eq 1 ] ;;
+		tap) [ $((flags & 3)) -eq 2 ] ;;
+		*) return 1 ;;
+	esac
+}
+
+device_has_ipv4_address() {
+	local device="$1"
+	local address="$2"
+	local output=""
+
+	[ -n "$device" ] && [ -n "$address" ] || return 1
+	if command -v ip >/dev/null 2>&1; then
+		output="$(ip -4 -o addr show dev "$device" 2>/dev/null || true)"
+		case "$output" in
+			*" inet ${address}/"*) return 0 ;;
+		esac
+	fi
+	if command -v ifconfig >/dev/null 2>&1; then
+		output="$(ifconfig "$device" 2>/dev/null || true)"
+		case "$output" in
+			*"inet addr:${address} "*|*" inet ${address} "*) return 0 ;;
+		esac
+	fi
+	return 1
+}
+
+detect_configured_tun_device() {
+	local mode="$1"
+	local address="$2"
+	local preferred_device="${3:-}"
+	local dir name flags prefix
+	local match_count=0 first_match="" preferred_match=""
+	local prefix_match="" prefix_match_count=0
+	local address_match="" address_match_count=0
 
 	[ -d "$SYS_CLASS_NET" ] || return 1
+
 	for dir in "$SYS_CLASS_NET"/*; do
 		[ -d "$dir" ] || continue
 		[ -f "$dir/tun_flags" ] || continue
 		name="${dir##*/}"
 		[ -n "$name" ] || continue
-		count=$((count + 1))
-		found="$name"
+		flags="$(cat "$dir/tun_flags" 2>/dev/null || true)"
+		device_mode_matches_tun_flags "$mode" "$flags" || continue
+		match_count=$((match_count + 1))
+		[ -n "$first_match" ] || first_match="$name"
+		if [ -z "$preferred_match" ] && [ "$name" = "$preferred_device" ]; then
+			preferred_match="$name"
+		fi
+		if [ -n "$address" ] && device_has_ipv4_address "$name" "$address"; then
+			address_match_count=$((address_match_count + 1))
+			address_match="$name"
+		fi
+		case "$mode" in
+			tap) prefix="tap" ;;
+			tun) prefix="tun" ;;
+			*) prefix="" ;;
+		esac
+		if [ -n "$prefix" ]; then
+			case "$name" in
+				"${prefix}"*)
+					prefix_match_count=$((prefix_match_count + 1))
+					[ -n "$prefix_match" ] || prefix_match="$name"
+				;;
+			esac
+		fi
 	done
 
-	[ "$count" -eq 1 ] || return 1
-	printf '%s\n' "$found"
-	return 0
-}
-
-count_tun_devices() {
-	local dir count=0
-
-	[ -d "$SYS_CLASS_NET" ] || {
-		printf '0\n'
+	# A configured address identifies the instance; never bind another VPN
+	# while the requested device is still being created or assigned its IP.
+	if [ -n "$address" ]; then
+		[ "$address_match_count" -eq 1 ] || return 1
+		printf '%s\n' "$address_match"
 		return 0
-	}
-	for dir in "$SYS_CLASS_NET"/*; do
-		[ -d "$dir" ] || continue
-		[ -f "$dir/tun_flags" ] || continue
-		count=$((count + 1))
-	done
-	printf '%s\n' "$count"
+	fi
+	if [ "$match_count" -eq 1 ]; then
+		printf '%s\n' "$first_match"
+		return 0
+	fi
+	if [ -n "$preferred_match" ]; then
+		printf '%s\n' "$preferred_match"
+		return 0
+	fi
+	if [ "$prefix_match_count" -eq 1 ]; then
+		printf '%s\n' "$prefix_match"
+		return 0
+	fi
+	return 1
 }
 
 sync_network_state() {
 	local web_cfg="" forward_list="" device_count name mode tun_name no_nat
 	local enabled=0 first_device_name="" duplicate existing
-	local tun_count=0 existing_device="" recorded_count=0
-	local default_tun_name="${VNT2_DEFAULT_TUN_NAME:-vnt-tun}"
+	local existing_device=""
+	local configured_ip=""
 
 	NETWORK_SYNC_RESULT=""
 	set --
@@ -1890,22 +1962,10 @@ EOF
 	fi
 
 	device_count="$(count_device_configs "$@")"
-	recorded_count="$(read_running_config_names | wc -l | tr -d '[:space:]')"
-	[ -n "$recorded_count" ] || recorded_count=0
 	case "$device_count" in
 		0)
-			# No runtime record yet (or all records select device_mode=no).
-			# Keep the managed interface visible while the Web service is enabled;
-			# the worker replaces the placeholder with the real TUN/TAP device
-			# as soon as the core creates it.
-			if [ "$recorded_count" -gt 0 ]; then
-				log_web "network sync has no active TUN/TAP configuration; removing VNT2 interface"
-				cleanup_network
-				NETWORK_SYNC_RESULT="no-device-mode"
-				return 0
-			fi
-			configure_network "$default_tun_name" "$forward_list" "0"
-			NETWORK_SYNC_RESULT="placeholder:${default_tun_name}"
+			cleanup_network
+			NETWORK_SYNC_RESULT="no-device-mode"
 			return 0
 		;;
 		1) : ;;
@@ -1929,33 +1989,37 @@ EOF
 	done
 
 	tun_name="$(trim_value "$(toml_get_value "${WEB_CONFIG_DIR}/${first_device_name}" "tun_name")")"
+	configured_ip="$(trim_value "$(toml_get_value "${WEB_CONFIG_DIR}/${first_device_name}" "ip")")"
+	case "$configured_ip" in
+		*/*) configured_ip="${configured_ip%%/*}" ;;
+	esac
+	case "$configured_ip" in
+		[0-9]*.[0-9]*.[0-9]*.[0-9]*) : ;;
+		*) configured_ip="" ;;
+	esac
 	no_nat="$(toml_get_bool "${WEB_CONFIG_DIR}/${first_device_name}" "no_nat")"
 	[ -n "$no_nat" ] || no_nat="0"
 
-	if [ -z "$tun_name" ]; then
-		tun_name="$(detect_tun_device 2>/dev/null || true)"
-		if [ -z "$tun_name" ]; then
-			tun_count="$(count_tun_devices)"
-			existing_device="$(trim_value "$(uci -q get network.VNT2.device 2>/dev/null || true)")"
-			if [ -n "$existing_device" ] && [ -e "${SYS_CLASS_NET}/${existing_device}/tun_flags" ]; then
-				tun_name="$existing_device"
-				log_web "network sync keeps existing TUN/TAP device ${tun_name} for ${first_device_name}"
-			elif [ "$tun_count" -eq 0 ] && [ -n "$existing_device" ]; then
-				# The managed device can disappear briefly while procd replaces
-				# vnt2_web. Keep the configured interface instead of flapping it.
-				configure_network "$existing_device" "$forward_list" "$no_nat"
-				NETWORK_SYNC_RESULT="kept:${existing_device}"
-				return 0
-			else
-				# Keep the managed interface visible even before the core has
-				# created the device. The worker will update the device name once
-				# a unique TUN/TAP interface appears.
-				log_web "network sync has no runtime TUN/TAP device for ${first_device_name}; using placeholder ${default_tun_name}"
-				tun_name="$default_tun_name"
-			fi
+	if [ -n "$tun_name" ]; then
+		case "$tun_name" in
+			*/*|*..*) tun_name="" ;;
+		esac
+		if [ -n "$tun_name" ] && [ -f "${SYS_CLASS_NET}/${tun_name}/tun_flags" ] &&
+			device_mode_matches_tun_flags "$mode" "$(cat "${SYS_CLASS_NET}/${tun_name}/tun_flags" 2>/dev/null || true)"; then
+			: # The named runtime device exists and has the requested layer.
 		else
-			log_web "network sync detected TUN/TAP device ${tun_name} for ${first_device_name}"
+			tun_name=""
 		fi
+	else
+		existing_device="$(trim_value "$(uci -q get network.VNT2.device 2>/dev/null || true)")"
+		tun_name="$(detect_configured_tun_device "$mode" "$configured_ip" "$existing_device" 2>/dev/null || true)"
+	fi
+
+	if [ -z "$tun_name" ]; then
+		log_web "network sync waiting for ${mode} device for ${first_device_name}"
+		cleanup_network
+		NETWORK_SYNC_RESULT="missing-runtime-device"
+		return 0
 	fi
 
 	configure_network "$tun_name" "$forward_list" "$no_nat"
@@ -2039,7 +2103,6 @@ prepare_client_network_runtime() {
 	fi
 
 	tun_name="$(trim_value "$(toml_get_value "${conf_file}" "tun_name")")"
-	[ -n "$tun_name" ] || tun_name="vnt-tun"
 	device_mode="$(trim_value "$(toml_get_value "${conf_file}" "device_mode")")"
 	[ -n "$device_mode" ] || device_mode="tun"
 	case "$device_mode" in

@@ -308,8 +308,9 @@ test_network_sync_state() {
 	load_function is_safe_toml_name
 	load_function read_running_config_names
 	load_function count_device_configs
-	load_function detect_tun_device
-	load_function count_tun_devices
+	load_function device_mode_matches_tun_flags
+	load_function device_has_ipv4_address
+	load_function detect_configured_tun_device
 	load_function sync_network_state
 	load_function cleanup_network
 	load_function configure_network
@@ -338,10 +339,8 @@ test_network_sync_state() {
 
 	: >"$calls"
 	sync_network_state
-	grep -Fqx 'configure_network vnt-tun vnt2fwlan vnt2fwwan lanfwvnt2 0' "$calls" || \
-		fail "empty running record did not create the placeholder managed network"
-	[ "$NETWORK_SYNC_RESULT" = "placeholder:vnt-tun" ] || \
-		fail "empty running record did not report the placeholder result"
+	grep -Fqx 'cleanup_network' "$calls" || fail "empty running record left a managed interface"
+	[ "$NETWORK_SYNC_RESULT" = "no-device-mode" ] || fail "empty running record result was unexpected"
 
 	printf '%s\n' 'disabled.toml' >"$WEB_CURRENT_CONFIG_RECORD"
 	printf '%s\n' 'device_mode = "no"' >"$config_dir/disabled.toml"
@@ -352,6 +351,8 @@ test_network_sync_state() {
 
 	printf '%s\n' 'active.toml' >"$WEB_CURRENT_CONFIG_RECORD"
 	printf '%s\n' 'tun_name = "vnt2tun"' 'device_mode = "tun"' >"$config_dir/active.toml"
+	mkdir -p "$SYS_CLASS_NET/vnt2tun"
+	printf '0x1001\n' >"$SYS_CLASS_NET/vnt2tun/tun_flags"
 	: >"$calls"
 	sync_network_state
 	grep -Fqx 'configure_network vnt2tun vnt2fwlan vnt2fwwan lanfwvnt2 0' "$calls" || \
@@ -361,51 +362,126 @@ test_network_sync_state() {
 	printf '%s\n' 'tun_name = "vnt2tap"' 'device_mode = "tap"' >"$config_dir/tap.toml"
 	: >"$calls"
 	sync_network_state
+	grep -Fqx 'cleanup_network' "$calls" || fail "TUN to TAP switch kept the old TUN or an uncreated TAP"
+	[ "$NETWORK_SYNC_RESULT" = "missing-runtime-device" ] || fail "TAP creation wait was not reported"
+	mkdir -p "$SYS_CLASS_NET/vnt2tap"
+	printf '0x1002\n' >"$SYS_CLASS_NET/vnt2tap/tun_flags"
+	: >"$calls"
+	sync_network_state
 	grep -Fqx 'configure_network vnt2tap vnt2fwlan vnt2fwwan lanfwvnt2 0' "$calls" || \
 		fail "active TAP configuration was not treated as a virtual device"
+	printf '0x1001\n' >"$SYS_CLASS_NET/vnt2tap/tun_flags"
+	: >"$calls"
+	sync_network_state
+	grep -Fqx 'cleanup_network' "$calls" || fail "explicit TAP name was accepted as a TUN device"
+	printf '0x1002\n' >"$SYS_CLASS_NET/vnt2tap/tun_flags"
+	# Reusing a device name must still verify the layer, not the name's suffix.
+	printf '%s\n' 'device_mode = "tun"' 'tun_name = "vnt2tap"' >"$config_dir/tap.toml"
+	: >"$calls"
+	sync_network_state
+	grep -Fqx 'cleanup_network' "$calls" || fail "TAP was accepted for a same-name TUN switch"
+	printf '0x1001\n' >"$SYS_CLASS_NET/vnt2tap/tun_flags"
+	: >"$calls"
+	sync_network_state
+	grep -Fqx 'configure_network vnt2tap vnt2fwlan vnt2fwwan lanfwvnt2 0' "$calls" || \
+		fail "same-name TAP to TUN recreation was not synchronized"
+	printf '%s\n' 'device_mode = "no"' >"$config_dir/tap.toml"
+	: >"$calls"
+	sync_network_state
+	grep -Fqx 'cleanup_network' "$calls" || fail "TUN to no-device kept a managed interface"
+	printf '%s\n' 'device_mode = "tap"' 'tun_name = "vnt2tap"' 'no_nat = true' >"$config_dir/tap.toml"
+	printf '0x1002\n' >"$SYS_CLASS_NET/vnt2tap/tun_flags"
+	: >"$calls"
+	sync_network_state
+	grep -Fqx 'configure_network vnt2tap vnt2fwlan vnt2fwwan lanfwvnt2 1' "$calls" || \
+		fail "no-device to TAP did not restore the selected NAT policy"
+	printf '%s\n' 'device_mode = "no"' >"$config_dir/tap.toml"
+	: >"$calls"
+	sync_network_state
+	grep -Fqx 'cleanup_network' "$calls" || fail "TAP to no-device kept a managed interface"
 
 	# An omitted device_mode defaults to tun, matching the upstream default.
 	printf '%s\n' 'default.toml' >"$WEB_CURRENT_CONFIG_RECORD"
-	printf '%s\n' 'tun_name = "vnt2default"' >"$config_dir/default.toml"
+	printf '%s\n' 'tun_name = "vnt2tun"' >"$config_dir/default.toml"
 	: >"$calls"
 	sync_network_state
-	grep -Fqx 'configure_network vnt2default vnt2fwlan vnt2fwwan lanfwvnt2 0' "$calls" || \
+	grep -Fqx 'configure_network vnt2tun vnt2fwlan vnt2fwwan lanfwvnt2 0' "$calls" || \
 		fail "omitted device_mode did not default to tun"
 
 	# TOML accepts single quotes and inline comments; both must be understood.
 	printf '%s\n' 'quoted.toml' >"$WEB_CURRENT_CONFIG_RECORD"
-	printf '%s\n' "tun_name = 'vnt2quoted' # inline comment" >"$config_dir/quoted.toml"
+	printf '%s\n' "tun_name = 'vnt2tap' # inline comment" >"$config_dir/quoted.toml"
 	printf '%s\n' "device_mode = 'tap' # inline comment" >>"$config_dir/quoted.toml"
 	: >"$calls"
 	sync_network_state
-	grep -Fqx 'configure_network vnt2quoted vnt2fwlan vnt2fwwan lanfwvnt2 0' "$calls" || \
+	grep -Fqx 'configure_network vnt2tap vnt2fwlan vnt2fwwan lanfwvnt2 0' "$calls" || \
 		fail "single-quoted TOML with inline comments was not parsed as a TAP device"
 
 	printf '%s\n' 'missing-name.toml' >"$WEB_CURRENT_CONFIG_RECORD"
 	printf '%s\n' 'device_mode = "tun"' >"$config_dir/missing-name.toml"
-	: >"$calls"
-	sync_network_state
-	grep -Fqx 'configure_network vnt-tun vnt2fwlan vnt2fwwan lanfwvnt2 0' "$calls" || \
-		fail "missing tun_name without a discoverable device did not create the placeholder interface"
-	[ "$NETWORK_SYNC_RESULT" = "configured:vnt-tun" ] || \
-		fail "missing tun_name did not report the configured placeholder result"
-
-	mkdir -p "$SYS_CLASS_NET/tun0"
-	: >"$SYS_CLASS_NET/tun0/tun_flags"
-	: >"$calls"
-	sync_network_state
-	grep -Fqx 'configure_network tun0 vnt2fwlan vnt2fwwan lanfwvnt2 0' "$calls" || \
-		fail "a unique runtime TUN device was not used for the managed interface"
-	rm -rf "$SYS_CLASS_NET/tun0"
-
-	# During a procd restart the managed device can vanish briefly. Keep the
-	# existing managed interface instead of deleting and recreating it.
-	MOCK_EXISTING_DEVICE=vnt2tun
+	MOCK_EXISTING_DEVICE=vnt-tun
 	: >"$calls"
 	sync_network_state
 	grep -Fqx 'configure_network vnt2tun vnt2fwlan vnt2fwwan lanfwvnt2 0' "$calls" || \
-		fail "transient device disappearance removed the managed interface"
+		fail "a unique runtime TUN was not used despite a stale UCI placeholder"
+
+	printf '%s\n' 'device_mode = "tap"' >"$config_dir/missing-name.toml"
+	: >"$calls"
+	sync_network_state
+	grep -Fqx 'configure_network vnt2tap vnt2fwlan vnt2fwwan lanfwvnt2 0' "$calls" || \
+		fail "a unique runtime TAP was not used despite a stale UCI TUN"
+
+	# A missing device must not keep the previous UCI interface, even during restart.
+	rm -rf "$SYS_CLASS_NET/vnt2tun" "$SYS_CLASS_NET/vnt2tap"
+	MOCK_EXISTING_DEVICE=vnt2tun
+	: >"$calls"
+	sync_network_state
+	grep -Fqx 'cleanup_network' "$calls" || fail "missing runtime device kept the stale UCI interface"
 	unset MOCK_EXISTING_DEVICE
+
+	mkdir -p "$SYS_CLASS_NET/tun0" "$SYS_CLASS_NET/tap0"
+	printf '1\n' >"$SYS_CLASS_NET/tun0/tun_flags"
+	printf '2\n' >"$SYS_CLASS_NET/tap0/tun_flags"
+	printf '%s\n' 'device_mode = "tun"' >"$config_dir/missing-name.toml"
+	: >"$calls"
+	sync_network_state
+	grep -Fqx 'configure_network tun0 vnt2fwlan vnt2fwwan lanfwvnt2 0' "$calls" || \
+		fail "TUN discovery used the TAP device"
+	printf '%s\n' 'device_mode = "tap"' >"$config_dir/missing-name.toml"
+	: >"$calls"
+	sync_network_state
+	grep -Fqx 'configure_network tap0 vnt2fwlan vnt2fwwan lanfwvnt2 0' "$calls" || \
+		fail "TAP discovery used the TUN device"
+	printf '0\n' >"$SYS_CLASS_NET/tap0/tun_flags"
+	: >"$calls"
+	sync_network_state
+	grep -Fqx 'cleanup_network' "$calls" || fail "unmatched tun_flags was accepted as TAP"
+	# An explicit IP must not fall back to an unrelated same-layer VPN.
+	printf '2\n' >"$SYS_CLASS_NET/tap0/tun_flags"
+	printf '%s\n' 'device_mode = "tap"' 'ip = "10.26.0.2/24"' >"$config_dir/missing-name.toml"
+	MOCK_ADDRESS_DEVICE=""
+	device_has_ipv4_address() {
+		[ "$2" = "10.26.0.2" ] && [ "$1" = "$MOCK_ADDRESS_DEVICE" ]
+	}
+	: >"$calls"
+	sync_network_state
+	grep -Fqx 'cleanup_network' "$calls" || fail "configured IP bound an unrelated TAP"
+	mkdir -p "$SYS_CLASS_NET/vnt2tap"
+	printf '2\n' >"$SYS_CLASS_NET/vnt2tap/tun_flags"
+	MOCK_ADDRESS_DEVICE=vnt2tap
+	MOCK_EXISTING_DEVICE=tap0
+	: >"$calls"
+	sync_network_state
+	grep -Fqx 'configure_network vnt2tap vnt2fwlan vnt2fwwan lanfwvnt2 0' "$calls" || \
+		fail "configured IP did not override the stale same-layer UCI device"
+	device_has_ipv4_address() { [ "$2" = "10.26.0.2" ]; }
+	: >"$calls"
+	sync_network_state
+	grep -Fqx 'cleanup_network' "$calls" || fail "duplicate IP devices were bound arbitrarily"
+	load_function device_has_ipv4_address
+	unset MOCK_ADDRESS_DEVICE MOCK_EXISTING_DEVICE
+	rm -rf "$SYS_CLASS_NET/vnt2tap"
+	rm -rf "$SYS_CLASS_NET/tun0" "$SYS_CLASS_NET/tap0"
 
 	printf '%s\n' 'first.toml' 'second.toml' >"$WEB_CURRENT_CONFIG_RECORD"
 	printf '%s\n' 'tun_name = "vnt2a"' 'device_mode = "tun"' >"$config_dir/first.toml"
@@ -428,6 +504,8 @@ test_network_sync_state() {
 	# Unsafe and stale names must be ignored without affecting valid entries.
 	printf '%s\n' '../escape.toml' 'stale.toml' 'valid.toml' >"$WEB_CURRENT_CONFIG_RECORD"
 	printf '%s\n' 'tun_name = "vnt2valid"' 'device_mode = "tun"' >"$config_dir/valid.toml"
+	mkdir -p "$SYS_CLASS_NET/vnt2valid"
+	printf '1\n' >"$SYS_CLASS_NET/vnt2valid/tun_flags"
 	: >"$calls"
 	sync_network_state
 	grep -Fqx 'configure_network vnt2valid vnt2fwlan vnt2fwwan lanfwvnt2 0' "$calls" || \
@@ -527,6 +605,99 @@ test_no_nat_enables_ipv4_forwarding() {
 	rm -rf "$dir"
 	trap - EXIT INT TERM
 	printf 'PASS: no_nat mode enables kernel IPv4 forwarding\n'
+}
+
+test_managed_firewall_mode_transitions() {
+	dir="$(mktemp -d)"
+	trap 'rm -rf "$dir"' EXIT INT TERM
+
+	load_function uci_set_if_changed
+	load_function uci_delete_if_exists
+	load_function configure_network
+	load_function cleanup_network
+	find_firewall_zone_name() { printf '%s\n' "$1"; }
+	uci() {
+		local command key
+		[ "${1:-}" = "-q" ] && shift
+		command="$1"
+		shift
+		case "$command" in
+			get)
+				key="$(printf '%s' "$1" | tr '.[]' '___')"
+				[ -f "$dir/$key" ] || return 1
+				cat "$dir/$key"
+			;;
+			set)
+				key="$(printf '%s' "${1%%=*}" | tr '.[]' '___')"
+				printf '%s\n' "${1#*=}" >"$dir/$key"
+			;;
+			delete)
+				key="$(printf '%s' "$1" | tr '.[]' '___')"
+				case "$1" in
+					*.*.*) rm -f "$dir/$key" ;;
+					*) rm -f "$dir/$key" "$dir/$key"_* ;;
+				esac
+			;;
+			changes) : ;;
+			*) return 1 ;;
+		esac
+	}
+	sysctl() { :; }
+	assert_uci() {
+		actual="$(uci -q get "$1" 2>/dev/null || true)"
+		[ "$actual" = "$2" ] || fail "$1: expected '$2', got '$actual'"
+	}
+	assert_absent() {
+		if uci -q get "$1" >/dev/null 2>&1; then
+			fail "$1 remained after mode or forwarding switch"
+		fi
+	}
+
+	configure_network tun0 'vnt2fwlan vnt2fwwan lanfwvnt2 wanfwvnt2' 0
+	assert_uci network.VNT2.device tun0
+	assert_uci firewall.vnt2zone.network VNT2
+	assert_uci firewall.vnt2zone.masq 1
+	assert_uci firewall.vnt2fwlan.src VNT2
+	assert_uci firewall.vnt2fwlan.dest lan
+	assert_uci firewall.vnt2fwwan.dest wan
+	assert_uci firewall.lanfwvnt2.src lan
+	assert_uci firewall.lanfwvnt2.dest VNT2
+	assert_uci firewall.wanfwvnt2.src wan
+	assert_uci firewall.wanfwvnt2.dest VNT2
+
+	configure_network tap0 'vnt2fwwan' 1
+	assert_uci network.VNT2.device tap0
+	assert_uci network.VNT2.ifname tap0
+	assert_uci firewall.vnt2zone.masq 0
+	assert_absent firewall.vnt2fwlan
+	assert_uci firewall.vnt2fwwan.dest wan
+	assert_absent firewall.lanfwvnt2
+	assert_absent firewall.wanfwvnt2
+
+	configure_network tun1 '' 0
+	assert_uci network.VNT2.device tun1
+	assert_uci firewall.vnt2zone.masq 1
+	assert_absent firewall.vnt2fwwan
+
+	cleanup_network
+	for key in network.VNT2 firewall.vnt2zone firewall.vnt2fwlan \
+		firewall.vnt2fwwan firewall.lanfwvnt2 firewall.wanfwvnt2; do
+		assert_absent "$key"
+	done
+	configure_network tun0 'lanfwvnt2' 1
+	assert_uci network.VNT2.device tun0
+	assert_uci firewall.vnt2zone.masq 0
+	assert_uci firewall.lanfwvnt2.dest VNT2
+	cleanup_network
+	configure_network tap0 'vnt2fwlan' 0
+	assert_uci network.VNT2.device tap0
+	assert_uci firewall.vnt2zone.masq 1
+	assert_uci firewall.vnt2fwlan.dest lan
+	assert_absent firewall.lanfwvnt2
+
+	rm -rf "$dir"
+	trap - EXIT INT TERM
+	printf 'PASS: TUN, TAP and no-device transitions reconcile firewall and NAT\n'
 }
 
 test_web_config_directory_and_empty_default() {
@@ -737,6 +908,7 @@ test_start_service_syncs_network
 test_network_sync_state
 test_idempotent_uci_helpers
 test_no_nat_enables_ipv4_forwarding
+test_managed_firewall_mode_transitions
 test_web_config_directory_and_empty_default
 test_persistent_machine_id
 test_status_view_escaping
