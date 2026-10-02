@@ -40,6 +40,7 @@ test_debounce() {
 	VNT2_RESTART_LOG_FILE="$dir/log" \
 	VNT2_RESTART_COMMAND=/usr/bin/true \
 	VNT2_NETWORK_CONFIG_DIR="$dir/config" \
+	VNT2_NETWORK_RECORD_FILE="$dir/vnt_current_config.txt" \
 	VNT2_NETWORK_SYNC_COMMAND=/usr/bin/true \
 	VNT2_RESTART_DELAY=2 \
 	VNT2_RESTART_POLL_INTERVAL=1 \
@@ -85,6 +86,7 @@ EOF
 	VNT2_RESTART_LOG_FILE="$dir/log" \
 	VNT2_RESTART_COMMAND="$dir/mock-restart" \
 	VNT2_NETWORK_CONFIG_DIR="$dir/config" \
+	VNT2_NETWORK_RECORD_FILE="$dir/vnt_current_config.txt" \
 	VNT2_NETWORK_SYNC_COMMAND=/usr/bin/true \
 	VNT2_RESTART_DELAY=1 \
 	VNT2_RESTART_POLL_INTERVAL=1 \
@@ -146,6 +148,7 @@ EOF
 	VNT2_RESTART_LOG_FILE="$dir/log" \
 	VNT2_RESTART_COMMAND="$dir/mock-restart" \
 	VNT2_NETWORK_CONFIG_DIR="$dir/config" \
+	VNT2_NETWORK_RECORD_FILE="$dir/vnt_current_config.txt" \
 	VNT2_SYS_CLASS_NET="$dir/sys-net" \
 	VNT2_NETWORK_SYNC_COMMAND="$dir/mock-sync" \
 	VNT2_RESTART_DELAY=1 \
@@ -156,20 +159,22 @@ EOF
 	wait_for_count "$dir/sync-count" 1 10 || fail "initial network snapshot was not synchronized"
 	printf '%s\n' 'device_mode = "tun"' 'tun_name = "vnt2tun"' >"$dir/config/active.toml"
 	wait_for_count "$dir/sync-count" 2 10 || fail "network config change did not trigger synchronization"
+	printf '%s\n' 'active.toml' >"$dir/vnt_current_config.txt"
+	wait_for_count "$dir/sync-count" 3 10 || fail "client running record change did not trigger synchronization"
 	# Same-size edits in the same second must still be detected (tun -> tap).
 	stamp="$(stat -c '%y' "$dir/config/active.toml")"
 	printf '%s\n' 'device_mode = "tap"' 'tun_name = "vnt2tun"' >"$dir/config/active.toml"
 	touch -d "$stamp" "$dir/config/active.toml"
-	wait_for_count "$dir/sync-count" 3 10 || fail "same-size TUN to TAP change did not trigger synchronization"
+	wait_for_count "$dir/sync-count" 4 10 || fail "same-size TUN to TAP change did not trigger synchronization"
 	mkdir -p "$dir/sys-net/vnt2tun"
 	printf '1\n' >"$dir/sys-net/vnt2tun/tun_flags"
-	wait_for_count "$dir/sync-count" 4 10 || fail "runtime device creation did not trigger synchronization"
+	wait_for_count "$dir/sync-count" 5 10 || fail "runtime device creation did not trigger synchronization"
 	printf '2\n' >"$dir/sys-net/vnt2tun/tun_flags"
-	wait_for_count "$dir/sync-count" 5 10 || fail "runtime TUN to TAP flag change did not trigger synchronization"
+	wait_for_count "$dir/sync-count" 6 10 || fail "runtime TUN to TAP flag change did not trigger synchronization"
 	printf '12\n' >"$dir/sys-net/vnt2tun/ifindex"
-	wait_for_count "$dir/sync-count" 6 10 || fail "same-name runtime device recreation did not trigger synchronization"
+	wait_for_count "$dir/sync-count" 7 10 || fail "same-name runtime device recreation did not trigger synchronization"
 	rm -rf "$dir/sys-net/vnt2tun"
-	wait_for_count "$dir/sync-count" 7 10 || fail "runtime device removal did not trigger synchronization"
+	wait_for_count "$dir/sync-count" 8 10 || fail "runtime device removal did not trigger synchronization"
 
 	date +%s >"$dir/pending"
 	wait_for_count "$dir/restart-count" 1 10 || \

@@ -84,9 +84,9 @@ check_project_contracts() {
 		fail "obsolete version worker is still packaged"
 	grep -Fq 'WEB_CONFIG_DIR="/vnt_config"' "$SOURCE_DIR/root/etc/init.d/vnt2" ||
 		fail "Web config directory is not fixed to /vnt_config"
-	grep -Fq 'WEB_CURRENT_CONFIG_RECORD="${WEB_CONFIG_DIR}/vnt_current_config.txt"' "$SOURCE_DIR/root/etc/init.d/vnt2" ||
-		fail "running config record is not kept in /vnt_config"
-	grep -Fq '"$NETWORK_CONFIG_DIR/vnt_current_config.txt"' "$SOURCE_DIR/root/usr/libexec/vnt2/restart-worker" ||
+	grep -Fq 'WEB_CURRENT_CONFIG_RECORD="/vnt_current_config.txt"' "$SOURCE_DIR/root/etc/init.d/vnt2" ||
+		fail "running config record does not match vnt2_web relative-path behavior"
+	grep -Fq 'NETWORK_RECORD_FILE="${VNT2_NETWORK_RECORD_FILE:-/vnt_current_config.txt}"' "$SOURCE_DIR/root/usr/libexec/vnt2/restart-worker" ||
 		fail "restart worker does not monitor the client running config record"
 	obsolete_record='.vnt_current_config''.'.'txt'
 	if grep -R -Fq "$obsolete_record" "$SOURCE_DIR"; then
@@ -136,10 +136,11 @@ check_project_contracts() {
 		"$SOURCE_DIR/root/usr/libexec/vnt2/preview-worker"
 	do
 		test -x "$executable" || fail "package executable is not marked executable: $executable"
-		if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-			indexed_path="$(git ls-files -- "$executable")"
+		if command -v git >/dev/null 2>&1 && \
+			git -c "safe.directory=${ROOT_DIR}" -C "$ROOT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+			indexed_path="$(git -c "safe.directory=${ROOT_DIR}" -C "$ROOT_DIR" ls-files -- "$executable")"
 			if [ -n "$indexed_path" ]; then
-				git ls-files -s -- "$executable" | grep -Eq '^100755 ' ||
+				git -c "safe.directory=${ROOT_DIR}" -C "$ROOT_DIR" ls-files -s -- "$executable" | grep -Eq '^100755 ' ||
 					fail "package executable is not executable in the Git index: $executable"
 			fi
 		fi
@@ -288,8 +289,15 @@ check_yaml_syntax() {
 				const YAML = require("yaml");
 				YAML.parse(fs.readFileSync(process.argv[1], "utf8"));
 			' "$workflow"
+		elif command -v node >/dev/null 2>&1 && \
+			node -e 'require("js-yaml")' >/dev/null 2>&1; then
+			node -e '
+				const fs = require("fs");
+				const YAML = require("js-yaml");
+				YAML.load(fs.readFileSync(process.argv[1], "utf8"));
+			' "$workflow"
 		else
-			fail "python3 PyYAML or Node yaml is required for YAML validation"
+			fail "python3 PyYAML, Node yaml, or Node js-yaml is required for YAML validation"
 		fi
 	done
 	[ "$workflow_found" -eq 1 ] || fail "no GitHub Actions workflow file was found"
@@ -354,8 +362,7 @@ check_lua_syntax
 check_yaml_syntax
 check_utf8_and_bom
 (
-	cd "$ROOT_DIR"
-	git diff --check
+	git -c "safe.directory=${ROOT_DIR}" -C "$ROOT_DIR" diff --check
 )
 printf 'PASS: git diff --check passed\n'
 

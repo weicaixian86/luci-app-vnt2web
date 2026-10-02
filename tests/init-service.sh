@@ -309,6 +309,9 @@ test_network_sync_state() {
 	load_function read_running_config_names
 	load_function count_device_configs
 	load_function device_mode_matches_tun_flags
+	load_function device_mode_matches_link_details
+	load_function read_tun_device_type
+	load_function device_matches_mode
 	load_function device_has_ipv4_address
 	load_function detect_configured_tun_device
 	load_function sync_network_state
@@ -330,7 +333,7 @@ test_network_sync_state() {
 		return 1
 	}
 	WEB_CONFIG_DIR="$config_dir"
-	WEB_CURRENT_CONFIG_RECORD="$config_dir/vnt_current_config.txt"
+	WEB_CURRENT_CONFIG_RECORD="$dir/vnt_current_config.txt"
 	SYS_CLASS_NET="$dir/sys-class-net"
 	mkdir -p "$SYS_CLASS_NET"
 	CONF=vnt2
@@ -456,7 +459,46 @@ test_network_sync_state() {
 	: >"$calls"
 	sync_network_state
 	grep -Fqx 'cleanup_network' "$calls" || fail "unmatched tun_flags was accepted as TAP"
+
+	# Some OpenWrt kernels do not export tun_flags. In that case the runtime
+	# link details must still distinguish TUN from TAP and drive reconciliation.
+	fake_bin="$dir/fake-bin"
+	mkdir -p "$fake_bin" "$SYS_CLASS_NET/no-flags-tun" "$SYS_CLASS_NET/no-flags-tap"
+	cat >"$fake_bin/ip" <<'EOF'
+#!/bin/sh
+if [ "${1:-}" = "-d" ] && [ "${2:-}" = "link" ]; then
+	case "${5:-}" in
+	no-flags-tun) printf '%s\n' 'no-flags-tun: tun type tun' ;;
+	no-flags-tap) printf '%s\n' 'no-flags-tap: tun type tap' ;;
+	*) exit 1 ;;
+	esac
+	exit 0
+fi
+exit 1
+EOF
+	chmod 0755 "$fake_bin/ip"
+	old_path="$PATH"
+	PATH="$fake_bin:$PATH"
+	[ "$(read_tun_device_type no-flags-tun)" = "tun" ] || fail "ip -d link did not identify a TUN without tun_flags"
+	[ "$(read_tun_device_type no-flags-tap)" = "tap" ] || fail "ip -d link did not identify a TAP without tun_flags"
+	device_matches_mode tun no-flags-tap && fail "ip -d link accepted TAP as TUN"
+	device_matches_mode tap no-flags-tun && fail "ip -d link accepted TUN as TAP"
+
+	printf '%s\n' 'no-flags.toml' >"$WEB_CURRENT_CONFIG_RECORD"
+	printf '%s\n' 'tun_name = "no-flags-tun"' 'device_mode = "tun"' >"$config_dir/no-flags.toml"
+	: >"$calls"
+	sync_network_state
+	grep -Fqx 'configure_network no-flags-tun vnt2fwlan vnt2fwwan lanfwvnt2 0' "$calls" || \
+		fail "TUN without tun_flags was not synchronized"
+	printf '%s\n' 'tun_name = "no-flags-tap"' 'device_mode = "tap"' >"$config_dir/no-flags.toml"
+	: >"$calls"
+	sync_network_state
+	grep -Fqx 'configure_network no-flags-tap vnt2fwlan vnt2fwwan lanfwvnt2 0' "$calls" || \
+		fail "TAP without tun_flags was not synchronized"
+	PATH="$old_path"
+
 	# An explicit IP must not fall back to an unrelated same-layer VPN.
+	printf '%s\n' 'missing-name.toml' >"$WEB_CURRENT_CONFIG_RECORD"
 	printf '2\n' >"$SYS_CLASS_NET/tap0/tun_flags"
 	printf '%s\n' 'device_mode = "tap"' 'ip = "10.26.0.2/24"' >"$config_dir/missing-name.toml"
 	MOCK_ADDRESS_DEVICE=""
@@ -703,8 +745,8 @@ test_managed_firewall_mode_transitions() {
 test_web_config_directory_and_empty_default() {
 	grep -Fq 'WEB_CONFIG_DIR="/vnt_config"' "$INIT_SCRIPT" || \
 		fail "Web config directory is not fixed to /vnt_config"
-	grep -Fq 'WEB_CURRENT_CONFIG_RECORD="${WEB_CONFIG_DIR}/vnt_current_config.txt"' "$INIT_SCRIPT" || \
-		fail "running config record is not kept in /vnt_config"
+	grep -Fq 'WEB_CURRENT_CONFIG_RECORD="/vnt_current_config.txt"' "$INIT_SCRIPT" || \
+		fail "running config record does not match vnt2_web relative-path behavior"
 	grep -Fq 'translate("Web配置文件路径")' "$CBI_SCRIPT" || \
 		fail "LuCI does not display the Web configuration path label"
 	grep -Fq 'return "/vnt_config/*.toml"' "$CBI_SCRIPT" || \
@@ -725,9 +767,8 @@ test_web_config_directory_and_empty_default() {
 	fi
 	grep -Fq 'mkdir -p "${WEB_CONFIG_DIR}"' "$INIT_SCRIPT" || fail "Web config directory is not created"
 	grep -Fq 'chmod 700 "${WEB_CONFIG_DIR}"' "$INIT_SCRIPT" || fail "Web config directory is not private"
-	grep -Fq 'VNT_CONFIG_DIR="${WEB_CONFIG_DIR}"' "$INIT_SCRIPT" || fail "vnt2_web does not receive its config directory"
-	grep -Fq 'VNT_CURRENT_CONFIG_RECORD="${WEB_CURRENT_CONFIG_RECORD}"' "$INIT_SCRIPT" || fail "vnt2_web does not receive its running config record path"
-	grep -Fq '"$NETWORK_CONFIG_DIR/vnt_current_config.txt"' "$WORKER_SCRIPT" || fail "restart worker does not monitor the client running config record"
+	grep -Fq 'NETWORK_RECORD_FILE="${VNT2_NETWORK_RECORD_FILE:-/vnt_current_config.txt}"' "$WORKER_SCRIPT" || fail "restart worker does not monitor the client running config record"
+	grep -Fq 'WEB_CURRENT_CONFIG_RECORD="/vnt_current_config.txt"' "$INIT_SCRIPT" || fail "init does not use the client running config record path"
 	obsolete_record='.vnt_current_config''.'.'txt'
 	if grep -Fq "$obsolete_record" "$INIT_SCRIPT" "$WORKER_SCRIPT"; then
 		fail "obsolete hidden running config record path remains in plugin runtime"

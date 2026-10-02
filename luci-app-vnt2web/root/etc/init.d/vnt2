@@ -13,7 +13,9 @@ DOWNLOAD_LOG="/tmp/vnt2-download.log"
 WEB_TIME="/tmp/vnt2_web_time"
 
 WEB_CONFIG_DIR="/vnt_config"
-WEB_CURRENT_CONFIG_RECORD="${WEB_CONFIG_DIR}/vnt_current_config.txt"
+# vnt2_web 2.0.10 uses relative paths for both values. It starts from /, so
+# TOML files live in /vnt_config while the running-instance record lives at /.
+WEB_CURRENT_CONFIG_RECORD="/vnt_current_config.txt"
 MACHINE_ID_FILE="/etc/machine-id"
 DBUS_MACHINE_ID_FILE="/var/lib/dbus/machine-id"
 
@@ -1839,6 +1841,84 @@ device_mode_matches_tun_flags() {
 	esac
 }
 
+device_mode_matches_link_details() {
+	local mode="$1"
+	local details="$2"
+
+	[ -n "$details" ] || return 1
+	case "$mode" in
+		tun)
+		case "$details" in
+			*"tun type tun"*|*"type tun"*|*"mode tun"*) return 0 ;;
+			*) return 1 ;;
+		esac
+		;;
+		tap)
+		case "$details" in
+			*"tun type tap"*|*"type tap"*|*"mode tap"*) return 0 ;;
+			*) return 1 ;;
+		esac
+		;;
+		*) return 1 ;;
+	esac
+}
+
+read_tun_device_type() {
+	local device="$1"
+	local flags details
+
+	[ -n "$device" ] || return 1
+	[ -d "${SYS_CLASS_NET}/${device}" ] || return 1
+
+	# tun_flags is the authoritative kernel marker when available. Some
+	# OpenWrt kernels or iproute2 builds do not expose it, so retain a
+	# conservative iproute2 fallback instead of treating a running device as
+	# absent.
+	if [ -f "${SYS_CLASS_NET}/${device}/tun_flags" ]; then
+		flags="$(cat "${SYS_CLASS_NET}/${device}/tun_flags" 2>/dev/null || true)"
+		case "$flags" in
+			0x*|0X*|*[!0-9]*) : ;;
+			*)
+				case $((flags & 3)) in
+					1) printf '%s\n' tun; return 0 ;;
+					2) printf '%s\n' tap; return 0 ;;
+				esac
+			;;
+		esac
+		if device_mode_matches_tun_flags tun "$flags"; then
+			printf '%s\n' tun
+			return 0
+		fi
+		if device_mode_matches_tun_flags tap "$flags"; then
+			printf '%s\n' tap
+			return 0
+		fi
+	fi
+
+	if command -v ip >/dev/null 2>&1; then
+		details="$(ip -d link show dev "$device" 2>/dev/null || true)"
+		device_mode_matches_link_details tun "$details" && {
+			printf '%s\n' tun
+			return 0
+		}
+		device_mode_matches_link_details tap "$details" && {
+			printf '%s\n' tap
+			return 0
+		}
+	fi
+
+	return 1
+}
+
+device_matches_mode() {
+	local mode="$1"
+	local device="$2"
+	local detected
+
+	detected="$(read_tun_device_type "$device" 2>/dev/null || true)"
+	[ "$detected" = "$mode" ]
+}
+
 device_has_ipv4_address() {
 	local device="$1"
 	local address="$2"
@@ -1864,7 +1944,7 @@ detect_configured_tun_device() {
 	local mode="$1"
 	local address="$2"
 	local preferred_device="${3:-}"
-	local dir name flags prefix
+	local dir name detected prefix
 	local match_count=0 first_match="" preferred_match=""
 	local prefix_match="" prefix_match_count=0
 	local address_match="" address_match_count=0
@@ -1873,11 +1953,10 @@ detect_configured_tun_device() {
 
 	for dir in "$SYS_CLASS_NET"/*; do
 		[ -d "$dir" ] || continue
-		[ -f "$dir/tun_flags" ] || continue
 		name="${dir##*/}"
 		[ -n "$name" ] || continue
-		flags="$(cat "$dir/tun_flags" 2>/dev/null || true)"
-		device_mode_matches_tun_flags "$mode" "$flags" || continue
+		detected="$(read_tun_device_type "$name" 2>/dev/null || true)"
+		[ "$detected" = "$mode" ] || continue
 		match_count=$((match_count + 1))
 		[ -n "$first_match" ] || first_match="$name"
 		if [ -z "$preferred_match" ] && [ "$name" = "$preferred_device" ]; then
@@ -2004,8 +2083,7 @@ EOF
 		case "$tun_name" in
 			*/*|*..*) tun_name="" ;;
 		esac
-		if [ -n "$tun_name" ] && [ -f "${SYS_CLASS_NET}/${tun_name}/tun_flags" ] &&
-			device_mode_matches_tun_flags "$mode" "$(cat "${SYS_CLASS_NET}/${tun_name}/tun_flags" 2>/dev/null || true)"; then
+		if [ -n "$tun_name" ] && device_matches_mode "$mode" "$tun_name"; then
 			: # The named runtime device exists and has the requested layer.
 		else
 			tun_name=""
@@ -2334,7 +2412,7 @@ start_web_instance() {
 	configure_web_firewall "$web_host" "$web_port" "$web_wan"
 	log_web "using ${web_bin} on ${web_addr}, configs=${WEB_CONFIG_DIR}/*.toml"
 	procd_open_instance "vnt2_web"
-	procd_set_param env RUST_LOG="$log_level" VNT_CONFIG_DIR="${WEB_CONFIG_DIR}" VNT_CURRENT_CONFIG_RECORD="${WEB_CURRENT_CONFIG_RECORD}"
+	procd_set_param env RUST_LOG="$log_level"
 	procd_set_param command /bin/sh -c "cd / && exec \"${web_bin}\" --addr \"${web_addr}\" --token \"${web_token}\" >>\"${WEB_LOG}\" 2>&1"
 	procd_set_param stdout 0
 	procd_set_param stderr 0

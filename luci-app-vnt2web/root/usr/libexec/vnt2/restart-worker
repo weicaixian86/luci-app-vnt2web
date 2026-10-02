@@ -5,6 +5,7 @@ CLAIMED_FILE="${VNT2_RESTART_CLAIMED_FILE:-/tmp/vnt2-restart.claimed}"
 DOWNLOAD_LOG="${VNT2_RESTART_LOG_FILE:-/tmp/vnt2-download.log}"
 RESTART_COMMAND="${VNT2_RESTART_COMMAND:-/etc/init.d/vnt2}"
 NETWORK_CONFIG_DIR="${VNT2_NETWORK_CONFIG_DIR:-/vnt_config}"
+NETWORK_RECORD_FILE="${VNT2_NETWORK_RECORD_FILE:-/vnt_current_config.txt}"
 NETWORK_SYNC_COMMAND="${VNT2_NETWORK_SYNC_COMMAND:-/etc/init.d/vnt2 sync_network}"
 SYS_CLASS_NET="${VNT2_SYS_CLASS_NET:-/sys/class/net}"
 RESTART_DELAY="${VNT2_RESTART_DELAY:-15}"
@@ -46,10 +47,10 @@ run_restart() {
 }
 
 read_network_snapshot() {
-	local file name size mtime checksum dir flags address ifindex
+	local file name size mtime checksum dir flags address ifindex details
 
 	if [ -d "$NETWORK_CONFIG_DIR" ]; then
-		for file in "$NETWORK_CONFIG_DIR"/*.toml "$NETWORK_CONFIG_DIR/vnt_current_config.txt"; do
+		for file in "$NETWORK_CONFIG_DIR"/*.toml; do
 			[ -f "$file" ] || continue
 			[ -L "$file" ] && continue
 			name="${file##*/}"
@@ -59,14 +60,30 @@ read_network_snapshot() {
 			printf '%s %s %s %s\n' "$name" "$size" "$mtime" "$checksum"
 		done
 	fi
+	for file in "$NETWORK_RECORD_FILE"; do
+		[ -f "$file" ] || continue
+		[ -L "$file" ] && continue
+		name="${file##*/}"
+		size="$(stat -c '%s' "$file" 2>/dev/null || wc -c <"$file" 2>/dev/null || printf '0')"
+		mtime="$(stat -c '%Y' "$file" 2>/dev/null || printf '0')"
+		checksum="$(cksum <"$file" 2>/dev/null || true)"
+		printf 'record %s %s %s %s\n' "$name" "$size" "$mtime" "$checksum"
+	done
 	if [ -d "$SYS_CLASS_NET" ]; then
 		for dir in "$SYS_CLASS_NET"/*; do
 			[ -d "$dir" ] || continue
-			[ -f "$dir/tun_flags" ] || continue
 			name="${dir##*/}"
 			flags="$(cat "$dir/tun_flags" 2>/dev/null || true)"
 			ifindex="$(cat "$dir/ifindex" 2>/dev/null || true)"
-			printf 'tun-device %s %s %s\n' "$name" "$flags" "$ifindex"
+			# Include every interface directory in the snapshot. A device may
+			# appear before tun_flags is exported, and iproute2 details are the
+			# fallback type signal used by the init script.
+			if command -v ip >/dev/null 2>&1; then
+				details="$(ip -d link show dev "$name" 2>/dev/null || true)"
+			else
+				details=""
+			fi
+			printf 'net-device %s %s %s %s\n' "$name" "$flags" "$ifindex" "$details"
 			if command -v ip >/dev/null 2>&1; then
 				address="$(ip -4 -o addr show dev "$name" 2>/dev/null || true)"
 				printf 'tun-address %s %s\n' "$name" "$address"
