@@ -1695,8 +1695,8 @@ apply_network_config_changes() {
 				ifup VNT2 >/dev/null 2>&1 || return 1
 			elif [ -x /sbin/ifup ]; then
 				/sbin/ifup VNT2 >/dev/null 2>&1 || return 1
-			elif [ -x /etc/init.d/network ]; then
-				/etc/init.d/network reload >/dev/null 2>&1 || return 1
+			else
+				return 1
 			fi
 		;;
 		reload)
@@ -1805,12 +1805,16 @@ configure_network() {
 		;;
 	esac
 
-	apply_network_config_changes ifup || return 1
+	apply_network_config_changes none || return 1
 	apply_firewall_config_changes || return 1
 	# no_nat=1 disables VNT's built-in NAT and asks the operating system to
 	# perform forwarding instead, so IPv4 forwarding must then be enabled.
 	if [ "${no_nat:-0}" = "1" ]; then
 		sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
+	fi
+	if ! apply_network_config_changes ifup; then
+		log_web "network sync pending: ifup VNT2 failed for ${tun_name}"
+		return 1
 	fi
 	return 0
 }

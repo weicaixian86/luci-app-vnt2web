@@ -764,6 +764,86 @@ test_managed_firewall_mode_transitions() {
 	printf 'PASS: TUN, TAP and no-device transitions reconcile firewall and NAT\n'
 }
 
+test_firewall_commits_when_interface_activation_fails() {
+	dir="$(mktemp -d)"
+	trap 'rm -rf "$dir"' EXIT INT TERM
+	calls="$dir/calls"
+
+	load_function uci_set_if_changed
+	load_function uci_delete_if_exists
+	load_function apply_network_config_changes
+	load_function apply_firewall_config_changes
+	load_function configure_network
+	find_firewall_zone_name() { printf '%s\n' "$1"; }
+	log_web() { printf '%s\n' "$*" >>"$dir/log"; }
+	uci() {
+		local command key section package
+		[ "${1:-}" = "-q" ] && shift
+		command="$1"
+		shift
+		case "$command" in
+			get)
+				key="$(printf '%s' "$1" | tr '.[]' '___')"
+				[ -f "$dir/$key" ] || return 1
+				cat "$dir/$key"
+			;;
+			set)
+				key="$(printf '%s' "${1%%=*}" | tr '.[]' '___')"
+				printf '%s\n' "${1#*=}" >"$dir/$key"
+				case "$1" in
+					network.*) : >"$dir/network.changed" ;;
+					firewall.*) : >"$dir/firewall.changed" ;;
+				esac
+			;;
+			delete)
+				section="$1"
+				key="$(printf '%s' "$section" | tr '.[]' '___')"
+				case "$section" in
+					*.*.*) rm -f "$dir/$key" ;;
+					*) rm -f "$dir/$key" "$dir/$key"_* ;;
+				esac
+				case "$section" in
+					network.*) : >"$dir/network.changed" ;;
+					firewall.*) : >"$dir/firewall.changed" ;;
+				esac
+			;;
+			changes)
+				package="$1"
+				[ -f "$dir/$package.changed" ] || return 0
+				printf '%s\n' changed
+			;;
+			commit)
+				package="$1"
+				rm -f "$dir/$package.changed"
+				printf 'commit %s\n' "$package" >>"$calls"
+			;;
+			*) return 1 ;;
+		esac
+	}
+	ifstatus() { return 1; }
+	ifup() { printf 'ifup %s\n' "$1" >>"$calls"; return 1; }
+	sysctl() { :; }
+	assert_uci() {
+		actual="$(uci -q get "$1" 2>/dev/null || true)"
+		[ "$actual" = "$2" ] || fail "$1: expected '$2', got '$actual'"
+	}
+
+	if configure_network tun0 'vnt2fwlan' 0; then
+		fail "configure_network succeeded despite ifup failure"
+	fi
+	assert_uci network.VNT2.device tun0
+	assert_uci firewall.vnt2zone.network VNT2
+	assert_uci firewall.vnt2zone.masq 1
+	grep -Fqx 'commit network' "$calls" || fail "network UCI was not committed before ifup"
+	grep -Fqx 'commit firewall' "$calls" || fail "firewall UCI was not committed before ifup"
+	grep -Fqx 'ifup VNT2' "$calls" || fail "VNT2 activation was not attempted"
+	grep -Fq 'ifup VNT2 failed' "$dir/log" || fail "ifup failure was not logged"
+
+	rm -rf "$dir"
+	trap - EXIT INT TERM
+	printf 'PASS: firewall zone is committed even when VNT2 activation is pending\n'
+}
+
 test_web_config_directory_and_empty_default() {
 	grep -Fq 'WEB_CONFIG_DIR="/vnt_config"' "$INIT_SCRIPT" || \
 		fail "Web config directory is not fixed to /vnt_config"
@@ -977,6 +1057,7 @@ test_network_sync_state
 test_idempotent_uci_helpers
 test_no_nat_enables_ipv4_forwarding
 test_managed_firewall_mode_transitions
+test_firewall_commits_when_interface_activation_fails
 test_web_config_directory_and_empty_default
 test_persistent_machine_id
 test_status_view_escaping
