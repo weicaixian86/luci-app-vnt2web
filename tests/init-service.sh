@@ -538,7 +538,6 @@ EOF
 	sync_network_state
 	grep -Fqx 'cleanup_network' "$calls" || fail "duplicate IP devices were bound arbitrarily"
 	load_function device_has_ipv4_address
-	load_function device_has_any_ipv4_address
 	unset MOCK_READY_IPV4
 	unset MOCK_ADDRESS_DEVICE MOCK_EXISTING_DEVICE
 	rm -rf "$SYS_CLASS_NET/vnt2tap"
